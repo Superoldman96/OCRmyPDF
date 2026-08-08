@@ -20,14 +20,16 @@ from .conftest import is_linux, run_ocrmypdf_api
 def test_semfree(resources, outpdf):
     with pytest.warns(DeprecationWarning, match="semfree.py is deprecated"):
         exitcode = run_ocrmypdf_api(
-            resources / 'multipage.pdf',
+            resources / '3small.pdf',
             outpdf,
             '--skip-text',
             '--skip-big',
             '2',
+            '--output-type',
+            'pdf',
             '--plugin',
             'ocrmypdf.extra_plugins.semfree',
             '--plugin',
             'tests/plugins/tesseract_noop.py',
         )
-        assert exitcode in (ExitCode.ok, ExitCode.pdfa_conversion_failed)
+        assert exitcode == ExitCode.ok

@@ -151,7 +151,7 @@ def test_hocr_api_multipage(resources: Path, outdir: Path, outpdf: Path):
     assert (outdir / '000006_ocr_hocr.hocr').exists()
     assert not (outdir / '000004_ocr_hocr.hocr').exists()
 
-    ocrmypdf.api._hocr_to_ocr_pdf(outdir, outpdf)
+    ocrmypdf.api._hocr_to_ocr_pdf(outdir, outpdf, optimize=0, output_type='pdf')
     assert outpdf.exists()
 
 
