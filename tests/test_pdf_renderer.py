@@ -803,10 +803,11 @@ class TestRtlTextExtraction:
         # Decode the glyph stream via the CMap
         decoded = ''.join(cmap.get(g, '') for g in glyph_ids)
         # The stream is pre-reversed for RTL, so reversing it back
-        # must yield the original logical text
+        # must yield the original logical text plus the word-separator
+        # space every rendered word carries (as in Tesseract's renderer)
         logical = decoded[::-1]
-        assert logical == 'سلام', (
-            f"Expected logical text 'سلام', got {logical!r} "
+        assert logical == 'سلام ', (
+            f"Expected logical text 'سلام ', got {logical!r} "
             f"(stream: {decoded!r}, glyph_ids: {glyph_ids})"
         )
 
@@ -853,9 +854,10 @@ class TestRtlTextExtraction:
 
         cmap, glyph_ids = _decode_tounicode_stream(output_pdf)
         decoded = ''.join(cmap.get(g, '') for g in glyph_ids)
+        # Logical text carries the word-separator space every word gets
         logical = decoded[::-1]
-        assert logical == 'שלום', (
-            f"Expected logical text 'שלום', got {logical!r} (stream: {decoded!r})"
+        assert logical == 'שלום ', (
+            f"Expected logical text 'שלום ', got {logical!r} (stream: {decoded!r})"
         )
 
     def test_rtl_tounicode_one_to_one(self, tmp_path, multi_font_manager):
