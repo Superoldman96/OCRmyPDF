@@ -111,6 +111,10 @@ jobs:
           uv run --no-dev img2pdf --version
 
       - name: Test
+        env:
+          # The PPA cell runs the same tesseract line that generated
+          # tests/cache; hold it to strict cache-version agreement.
+          OCRMYPDF_TEST_CACHE_STRICT: ${{ matrix.tesseract_ppa == 'ppa' && '1' || '' }}
         run: |
           uv run --no-dev pytest --cov-report xml --cov --durations=25 ${{ (github.event_name == 'schedule' || matrix.runslow == 'runslow') && '--runslow' || '' }} tests/
 
