@@ -97,6 +97,6 @@ def validate(input_file: Path, flavour: str) -> ValidationResult:
                 failed_rules,
                 f'PDF/A validation failed with {failed_rules} rule violations',
             )
-    except (json.JSONDecodeError, KeyError, TypeError) as e:
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as e:
         log.debug('Failed to parse verapdf output: %s', e)
         return ValidationResult(False, -1, f'Failed to parse verapdf output: {e}')
