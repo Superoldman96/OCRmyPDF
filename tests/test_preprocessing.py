@@ -14,9 +14,13 @@ from ocrmypdf.helpers import Resolution
 from ocrmypdf.pdfinfo import PdfInfo
 from ocrmypdf.pluginspec import GhostscriptRasterDevice
 
-from .conftest import check_ocrmypdf, have_unpaper, run_ocrmypdf
-
-RENDERERS = ['fpdf2', 'sandwich']
+from .conftest import (
+    RENDERERS,
+    check_ocrmypdf,
+    first_page_dimensions,
+    have_unpaper,
+    run_ocrmypdf,
+)
 
 
 def test_deskew(resources, outdir):
@@ -162,3 +166,64 @@ def test_convert_to_square_resolution(renderer, resources, outpdf):
     out_im_h = out_p0.images[0].height / out_p0.images[0].dpi.y
     assert isclose(out_p0.width_inches, out_im_w)
     assert isclose(out_p0.height_inches, out_im_h)
+
+
+@pytest.mark.parametrize('renderer', RENDERERS)
+def test_oversample(renderer, resources, outpdf):
+    oversampled_pdf = check_ocrmypdf(
+        resources / 'skew.pdf',
+        outpdf,
+        '--oversample',
+        '350',
+        '-f',
+        '--pdf-renderer',
+        renderer,
+        '--plugin',
+        'tests/plugins/tesseract_cache.py',
+    )
+
+    pdfinfo = PdfInfo(oversampled_pdf)
+
+    print(pdfinfo[0].dpi.x)
+    assert abs(pdfinfo[0].dpi.x - 350) < 1
+
+
+def test_very_high_dpi(resources, outpdf):
+    """Checks for a Decimal quantize error with high DPI, etc."""
+    check_ocrmypdf(
+        resources / '2400dpi.pdf',
+        outpdf,
+        '--plugin',
+        'tests/plugins/tesseract_cache.py',
+    )
+    pdfinfo = PdfInfo(outpdf)
+
+    image = pdfinfo[0].images[0]
+    assert isclose(image.dpi.x, image.dpi.y)
+    assert isclose(image.dpi.x, 2400)
+
+
+@pytest.mark.parametrize('renderer', RENDERERS)
+def test_pagesize_consistency(renderer, resources, outpdf):
+    infile = resources / '3small.pdf'
+
+    before_dims = first_page_dimensions(infile)
+
+    check_ocrmypdf(
+        infile,
+        outpdf,
+        '--pdf-renderer',
+        renderer,
+        '--clean' if have_unpaper() else None,
+        '--deskew',
+        # '--remove-background',
+        '--clean-final' if have_unpaper() else None,
+        '-k',
+        '--pages',
+        '1',
+    )
+
+    after_dims = first_page_dimensions(outpdf)
+
+    assert isclose(before_dims[0], after_dims[0], rel_tol=1e-4)
+    assert isclose(before_dims[1], after_dims[1], rel_tol=1e-4)

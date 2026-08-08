@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import datetime as dt
 import warnings
+from pathlib import Path
 from shutil import copyfile
 from unittest.mock import MagicMock, patch
 
@@ -423,3 +424,16 @@ def test_prevent_gs_invalid_xml(resources, outdir):
     # Ensure we did not carry the nul forward.
     assert contents.find(b'&#0;', xmp_start, xmp_end) == -1, "found escaped nul"
     assert contents.find(b'\x00', xmp_start, xmp_end) == -1
+
+
+def test_missing_docinfo(resources, outpdf):
+    result = run_ocrmypdf_api(
+        resources / 'missing_docinfo.pdf',
+        outpdf,
+        '-l',
+        'eng',
+        '--skip-text',
+        '--plugin',
+        Path('tests/plugins/tesseract_noop.py'),
+    )
+    assert result == ExitCode.ok

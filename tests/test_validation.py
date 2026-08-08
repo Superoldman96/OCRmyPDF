@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pikepdf
@@ -362,3 +363,51 @@ def test_options_validation_error_is_not_a_traceback(resources, outpdf):
 def test_argparse_error_still_exits_2(resources, outpdf):
     p = run_ocrmypdf(resources / 'trivial.pdf', outpdf, '--no-such-option')
     assert p.returncode == 2
+
+
+@pytest.fixture
+def protected_file(outdir):
+    protected_file = outdir / 'protected.pdf'
+    protected_file.touch()
+    protected_file.chmod(0o400)  # Read-only
+    yield protected_file
+
+
+@pytest.mark.skipif(
+    os.name == 'nt' or os.geteuid() == 0, reason="root can write to anything"
+)
+def test_destination_not_writable(resources, protected_file):
+    exitcode = run_ocrmypdf_api(
+        resources / 'jbig2.pdf',
+        protected_file,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.file_access_error
+
+
+def test_output_is_dir(resources, outdir, caplog):
+    exitcode = run_ocrmypdf_api(
+        resources / 'trivial.pdf',
+        outdir,
+        '--force-ocr',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.file_access_error
+    assert 'is not a writable file' in caplog.text
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="symlink needs admin permissions")
+def test_output_is_symlink(resources, outdir):
+    sym = Path(outdir / 'this_is_a_symlink')
+    sym.symlink_to(outdir / 'out.pdf')
+    exitcode = run_ocrmypdf_api(
+        resources / 'trivial.pdf',
+        sym,
+        '--force-ocr',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.ok
+    assert (outdir / 'out.pdf').stat().st_size > 0, 'target file not created'

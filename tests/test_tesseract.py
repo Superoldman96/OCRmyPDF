@@ -13,9 +13,9 @@ import pytest
 
 from ocrmypdf import pdfinfo
 from ocrmypdf._exec import tesseract
-from ocrmypdf.exceptions import BadArgsError, MissingDependencyError
+from ocrmypdf.exceptions import BadArgsError, ExitCode, MissingDependencyError
 
-from .conftest import check_ocrmypdf, run_ocrmypdf_api
+from .conftest import RENDERERS, check_ocrmypdf, run_ocrmypdf, run_ocrmypdf_api
 
 # pylint: disable=redefined-outer-name
 
@@ -167,3 +167,166 @@ def test_blocked_language(resources, no_outpdf):
     for bad_lang in ['osd', 'equ']:
         with pytest.raises(BadArgsError):
             run_ocrmypdf_api(infile, no_outpdf, '-l', bad_lang)
+
+
+@pytest.mark.parametrize('renderer', RENDERERS)
+def test_tesseract_crash(renderer, resources, no_outpdf, caplog):
+    exitcode = run_ocrmypdf_api(
+        resources / 'ccitt.pdf',
+        no_outpdf,
+        '-v',
+        '1',
+        '--pdf-renderer',
+        renderer,
+        '--plugin',
+        'tests/plugins/tesseract_crash.py',
+    )
+    assert exitcode == ExitCode.child_process_error
+    assert not no_outpdf.exists()
+    assert "SubprocessOutputError" in caplog.text
+
+
+def test_tesseract_crash_autorotate(resources, no_outpdf, caplog):
+    exitcode = run_ocrmypdf_api(
+        resources / 'ccitt.pdf',
+        no_outpdf,
+        '-r',
+        '--plugin',
+        'tests/plugins/tesseract_crash.py',
+    )
+    assert exitcode == ExitCode.child_process_error
+    assert not no_outpdf.exists()
+    assert "uncaught exception" in caplog.text
+
+
+@pytest.mark.parametrize('renderer', RENDERERS)
+@pytest.mark.slow
+def test_tesseract_image_too_big(renderer, resources, outpdf):
+    check_ocrmypdf(
+        resources / 'hugemono.pdf',
+        outpdf,
+        '-r',
+        '--pdf-renderer',
+        renderer,
+        '--max-image-mpixels',
+        '0',
+        '--plugin',
+        'tests/plugins/tesseract_big_image_error.py',
+    )
+
+
+@pytest.fixture
+def valid_tess_config(outdir):
+    cfg_file = outdir / 'test.cfg'
+    with cfg_file.open('w') as f:
+        f.write(
+            '''\
+load_system_dawg 0
+language_model_penalty_non_dict_word 0
+language_model_penalty_non_freq_dict_word 0
+'''
+        )
+    yield cfg_file
+
+
+def test_tesseract_config_valid(resources, valid_tess_config, outpdf):
+    check_ocrmypdf(
+        resources / '3small.pdf',
+        outpdf,
+        '--tesseract-config',
+        valid_tess_config,
+        '--pages',
+        '1',
+    )
+
+
+@pytest.fixture
+def invalid_tess_config(outdir):
+    cfg_file = outdir / 'test.cfg'
+    with cfg_file.open('w') as f:
+        f.write(
+            '''\
+THIS FILE IS INVALID
+'''
+        )
+    yield cfg_file
+
+
+@pytest.mark.slow  # This test sometimes times out in CI
+@pytest.mark.parametrize('renderer', RENDERERS)
+def test_tesseract_config_invalid(renderer, resources, invalid_tess_config, outpdf):
+    p = run_ocrmypdf(
+        resources / 'ccitt.pdf',
+        outpdf,
+        '--pdf-renderer',
+        renderer,
+        '--tesseract-config',
+        invalid_tess_config,
+    )
+    assert (
+        "parameter not found" in p.stderr.lower()
+        or "error occurred while parsing" in p.stderr.lower()
+    ), "No error message"
+    assert p.returncode == ExitCode.invalid_config
+
+
+@pytest.mark.parametrize('value', ['auto', 'otsu', 'adaptive-otsu', 'sauvola'])
+def test_tesseract_thresholding(value, resources, outpdf):
+    check_ocrmypdf(
+        resources / 'trivial.pdf',
+        outpdf,
+        '--tesseract-thresholding',
+        value,
+        '--plugin',
+        'tests/plugins/tesseract_cache.py',
+    )
+
+
+@pytest.mark.parametrize('value', ['abcxyz'])
+def test_tesseract_thresholding_invalid(value, resources, no_outpdf):
+    with pytest.raises(SystemExit, match='2'):
+        run_ocrmypdf_api(
+            resources / 'trivial.pdf',
+            no_outpdf,
+            '--tesseract-thresholding',
+            value,
+            '--plugin',
+            'tests/plugins/tesseract_cache.py',
+        )
+
+
+@pytest.mark.skipif(
+    tesseract.version() >= tesseract.TesseractVersion('5'),
+    reason="tess 5 tries harder to find its files",
+)
+def test_tesseract_missing_tessdata(monkeypatch, resources, no_outpdf, tmpdir):
+    monkeypatch.setenv("TESSDATA_PREFIX", os.fspath(tmpdir))
+    with pytest.raises(MissingDependencyError):
+        run_ocrmypdf_api(resources / 'graph.pdf', no_outpdf, '-v', '1', '--skip-text')
+
+
+def test_tesseract_oem(resources, outpdf):
+    check_ocrmypdf(
+        resources / 'trivial.pdf',
+        outpdf,
+        '--tesseract-oem',
+        '1',
+        '--plugin',
+        'tests/plugins/tesseract_cache.py',
+    )
+
+
+@pytest.mark.parametrize('renderer', RENDERERS)
+def test_pagesegmode(renderer, resources, outpdf):
+    check_ocrmypdf(
+        resources / 'skew.pdf',
+        outpdf,
+        '--tesseract-pagesegmode',
+        '7',
+        '-v',
+        '1',
+        '--pdf-renderer',
+        renderer,
+        '--plugin',
+        'tests/plugins/tesseract_cache.py',
+    )

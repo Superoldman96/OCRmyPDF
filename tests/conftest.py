@@ -62,6 +62,8 @@ def have_unpaper():
 TESTS_ROOT = Path(__file__).parent.resolve()
 PROJECT_ROOT = TESTS_ROOT
 
+RENDERERS = ['fpdf2', 'sandwich']
+
 
 @pytest.fixture(scope="session")
 def resources() -> Path:

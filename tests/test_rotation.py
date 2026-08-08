@@ -21,11 +21,9 @@ from ocrmypdf.helpers import IMG2PDF_KWARGS, Resolution
 from ocrmypdf.pdfinfo import PdfInfo
 from ocrmypdf.pluginspec import GhostscriptRasterDevice
 
-from .conftest import check_ocrmypdf, run_ocrmypdf_api
+from .conftest import RENDERERS, check_ocrmypdf, run_ocrmypdf_api
 
 # pylintx: disable=unused-variable
-
-RENDERERS = ['fpdf2', 'sandwich']
 
 
 def compare_images_monochrome(
