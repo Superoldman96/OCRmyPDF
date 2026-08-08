@@ -12,6 +12,10 @@ on:
     paths-ignore:
       - README*
   pull_request:
+  schedule:
+    # Nightly run with --runslow on all platforms; slow tests are otherwise
+    # only run on one Linux matrix cell per push/PR.
+    - cron: "40 8 * * *"
 
 jobs:
   lint:
@@ -46,6 +50,9 @@ jobs:
           - os: ubuntu-22.04
             tesseract_ppa: "ppa"
             python: "3.11"
+          - os: ubuntu-24.04
+            python: "3.14"
+            runslow: "runslow"
 
     env:
       OS: ${{ matrix.os }}
@@ -105,7 +112,7 @@ jobs:
 
       - name: Test
         run: |
-          uv run --no-dev pytest --cov-report xml --cov=ocrmypdf --cov=tests/ -n0 tests/
+          uv run --no-dev pytest --cov-report xml --cov --durations=25 ${{ (github.event_name == 'schedule' || matrix.runslow == 'runslow') && '--runslow' || '' }} tests/
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -168,7 +175,7 @@ jobs:
 
       - name: Test
         run: |
-          uv run --no-dev pytest --cov-report xml --cov=ocrmypdf --cov=tests/ -n0 tests/
+          uv run --no-dev pytest --cov-report xml --cov --durations=25 ${{ github.event_name == 'schedule' && '--runslow' || '' }} tests/
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
@@ -216,7 +223,7 @@ jobs:
 
       - name: Test
         run: |
-          uv run --no-dev pytest --cov-report xml --cov=ocrmypdf --cov=tests/ -n0 tests/
+          uv run --no-dev pytest --cov-report xml --cov --durations=25 ${{ github.event_name == 'schedule' && '--runslow' || '' }} tests/
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7
