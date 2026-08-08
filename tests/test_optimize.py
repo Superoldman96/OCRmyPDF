@@ -85,20 +85,20 @@ def test_jpg_png_params(resources, outpdf):
     )
 
 
-def test_jpeg_quality_cli_flag_reaches_options(resources, outpdf):
+def test_jpeg_quality_cli_flag_reaches_options(jpeg_scan, outpdf):
     # Regression test for #1723: --jpeg-quality was silently dropped by
     # namespace_to_options() because the argparse dest ('jpeg_quality') did
     # not match the OcrOptions field it was checked against.
-    input_ = fspath(resources / 'c02-22.pdf')
+    input_ = fspath(jpeg_scan)
     options, _pm = get_options_and_plugins(
         ['--jpeg-quality', '10', input_, fspath(outpdf)]
     )
     assert options.jpeg_quality == 10
 
 
-def test_jpg_quality_cli_alias_reaches_options(resources, outpdf):
+def test_jpg_quality_cli_alias_reaches_options(jpeg_scan, outpdf):
     # --jpg-quality is a hidden alias for --jpeg-quality (same argparse dest).
-    input_ = fspath(resources / 'c02-22.pdf')
+    input_ = fspath(jpeg_scan)
     options, _pm = get_options_and_plugins(
         ['--jpg-quality', '42', input_, fspath(outpdf)]
     )

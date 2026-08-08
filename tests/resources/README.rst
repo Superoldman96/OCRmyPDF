@@ -6,7 +6,7 @@ at all and are not necessarily meant as examples of OCR output. Some are even in
 crash certain PDF viewers.
 
 Some of these images were obtained from the public domain. Others are copyrighted and may have
-licenses associated. Refer to ``.reuse/dep5`` file in OCRmyPDF's Git repository for information on
+licenses associated. Refer to the ``REUSE.toml`` file in OCRmyPDF's Git repository for information on
 the copyright holder(s) and license(s) applicable to these resources.
 
 .. list-table::
@@ -16,8 +16,9 @@ the copyright holder(s) and license(s) applicable to these resources.
     *   - File
         - Source
         - Purpose
-    *   - c02-22.pdf
-        - `Project Gutenberg`_, Adventures of Huckleberry Finn, page 22
+    *   - c03-29.pdf
+        - `Project Gutenberg`_, Adventures of Huckleberry Finn, page 29
+          (chapter 3 opening, source scan ``images/c03-29.jpg``)
         - difficult OCR image (obscure fonts and illustrations)
     *   - graph.pdf
         - `Wikimedia:Simple_line_graph_of_ACE_2012_results_by_candidate_sj01.png`_
@@ -123,7 +124,7 @@ These test resources are assemblies or derivatives from other previously mention
 
 .. _`Wikimedia: LinnSequencer`: https://upload.wikimedia.org/wikipedia/en/b/b7/LinnSequencer_hardware_MIDI_sequencer_brochure_page_2_300dpi.jpg
 
-.. _`Project Gutenberg`: https://www.gutenberg.org/files/76/76-h/76-h.htm#c2
+.. _`Project Gutenberg`: https://www.gutenberg.org/files/76/76-h/images/
 
 .. _`Wikimedia: Simple_line_graph_of_ACE_2012_results_by_candidate_sj01.png`: https://en.wikipedia.org/wiki/File:Simple_line_graph_of_ACE_2012_results_by_candidate_sj01.png
 

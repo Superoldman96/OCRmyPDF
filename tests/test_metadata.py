@@ -72,8 +72,8 @@ def test_repair_docinfo_nuls_undecodable_key_real_file(resources):
 
 
 @pytest.mark.parametrize("output_type", ['pdfa', 'pdf'])
-def test_override_metadata(output_type, resources, outpdf, caplog):
-    input_file = resources / 'c02-22.pdf'
+def test_override_metadata(output_type, jpeg_scan, outpdf, caplog):
+    input_file = jpeg_scan
     german = 'Du siehst den Wald vor lauter Bäumen nicht.'
     chinese = '孔子'
 
@@ -150,10 +150,10 @@ def test_unset_metadata(output_type, field, resources, outpdf, caplog):
             assert v in after_data
 
 
-def test_high_unicode(resources, no_outpdf):
+def test_high_unicode(jpeg_scan, no_outpdf):
     # Ghostscript doesn't support high Unicode, so neither do we, to be
     # safe
-    input_file = resources / 'c02-22.pdf'
+    input_file = jpeg_scan
     high_unicode = 'U+1030C is: 𐌌'
 
     p = run_ocrmypdf(

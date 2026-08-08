@@ -121,8 +121,8 @@ def test_single_page_inline_image(eight_by_eight_inline_image):
     assert pdfimage.width == 8
 
 
-def test_jpeg(resources):
-    filename = resources / 'c02-22.pdf'
+def test_jpeg(jpeg_scan):
+    filename = jpeg_scan
 
     pdf = pdfinfo.PdfInfo(filename)
 

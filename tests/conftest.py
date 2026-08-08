@@ -107,6 +107,12 @@ def multipage(resources):
     return resources / 'multipage.pdf'
 
 
+@pytest.fixture(scope="session")
+def jpeg_scan(resources):
+    """One-page 150 dpi JPEG scan of an antique book page; difficult OCR."""
+    return resources / 'c03-29.pdf'
+
+
 def check_ocrmypdf(input_file: Path, output_file: Path, *args) -> Path:
     """Run ocrmypdf and confirm that a valid plausible PDF was created."""
     api_args = [str(input_file), str(output_file)] + [
