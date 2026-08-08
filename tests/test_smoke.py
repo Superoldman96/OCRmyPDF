@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from .conftest import RENDERERS, check_ocrmypdf, have_unpaper
+from .conftest import check_ocrmypdf, have_unpaper
 
 
 def test_quick(resources, outpdf):
@@ -16,12 +16,18 @@ def test_quick(resources, outpdf):
     )
 
 
-@pytest.mark.parametrize('renderer', RENDERERS)
-@pytest.mark.parametrize('output_type', ['pdf', 'pdfa'])
+# Pairwise: each renderer and each output type appears once. The full
+# renderer x output_type crossing is covered by test_preprocessing.py::
+# test_exotic_image, test_page_boxes.py and test_rotation.py.
+@pytest.mark.parametrize(
+    'renderer, output_type', [('fpdf2', 'pdfa'), ('sandwich', 'pdf')]
+)
 def test_maximum_options(renderer, output_type, multipage, outpdf):
     check_ocrmypdf(
         multipage,
         outpdf,
+        '--pages',
+        '1-3',
         '-d',
         '-ci' if have_unpaper() else None,
         '-f',

@@ -23,6 +23,8 @@ def test_force_ocr(resources, outpdf):
         resources / 'graph_ocred.pdf',
         outpdf,
         '-f',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_cache.py',
     )
@@ -35,6 +37,8 @@ def test_skip_ocr(resources, outpdf):
         resources / 'graph_ocred.pdf',
         outpdf,
         '-s',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_cache.py',
     )
@@ -46,7 +50,7 @@ def test_redo_ocr(resources, outpdf):
     in_ = resources / 'graph_ocred.pdf'
     before = PdfInfo(in_, detailed_analysis=True)
     out = outpdf
-    out = check_ocrmypdf(in_, out, '--redo-ocr')
+    out = check_ocrmypdf(in_, out, '--redo-ocr', '--output-type', 'pdf')
     after = PdfInfo(out, detailed_analysis=True)
     assert before[0].has_text and after[0].has_text
     assert before[0].get_textareas() != after[0].get_textareas(), (
@@ -63,6 +67,8 @@ def test_ocr_timeout(renderer, resources, outpdf):
         '0',
         '--pdf-renderer',
         renderer,
+        '--output-type',
+        'pdf',
     )
     pdfinfo = PdfInfo(out)
     assert not pdfinfo[0].has_text
@@ -74,6 +80,8 @@ def test_skip_big(resources, outpdf):
         outpdf,
         '--skip-big',
         '1',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_cache.py',
     )
@@ -88,6 +96,8 @@ def test_skip_big_with_no_images(resources, outpdf):
         '--skip-big',
         '5',
         '--force-ocr',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_noop.py',
     )

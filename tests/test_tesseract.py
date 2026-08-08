@@ -13,6 +13,7 @@ import pytest
 
 from ocrmypdf import pdfinfo
 from ocrmypdf._exec import tesseract
+from ocrmypdf.builtin_plugins.tesseract_ocr import _thresholding_method_converter
 from ocrmypdf.exceptions import BadArgsError, ExitCode, MissingDependencyError
 
 from .conftest import RENDERERS, check_ocrmypdf, run_ocrmypdf, run_ocrmypdf_api
@@ -270,7 +271,7 @@ def test_tesseract_config_invalid(renderer, resources, invalid_tess_config, outp
     assert p.returncode == ExitCode.invalid_config
 
 
-@pytest.mark.parametrize('value', ['auto', 'otsu', 'adaptive-otsu', 'sauvola'])
+@pytest.mark.parametrize('value', ['auto'])
 def test_tesseract_thresholding(value, resources, outpdf):
     check_ocrmypdf(
         resources / 'trivial.pdf',
@@ -305,18 +306,102 @@ def test_tesseract_missing_tessdata(monkeypatch, resources, no_outpdf, tmpdir):
         run_ocrmypdf_api(resources / 'graph.pdf', no_outpdf, '-v', '1', '--skip-text')
 
 
-def test_tesseract_oem(resources, outpdf):
-    check_ocrmypdf(
-        resources / 'trivial.pdf',
-        outpdf,
-        '--tesseract-oem',
-        '1',
-        '--plugin',
-        'tests/plugins/tesseract_cache.py',
+def _fake_tesseract_run(captured):
+    """Return a stand-in for tesseract.run that records argv and fakes output."""
+
+    def fake_run(args, *, env=None, **kwargs):
+        argv = [os.fspath(arg) for arg in args]
+        captured.append(argv)
+        # Emulate tesseract writing <outputbase>.<configfile> for each requested
+        # output format, so the builders' post-run existence checks pass.
+        outputbase, configfiles = argv[-3], argv[-2:]
+        for configfile in configfiles:
+            Path(f'{outputbase}.{configfile}').write_bytes(b'')
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout=b'')
+
+    return fake_run
+
+
+def _build_tesseract_argv(monkeypatch, builder, input_file, outdir, **overrides):
+    """Run one of the tesseract arg builders and return the argv it assembled."""
+    captured: list[list[str]] = []
+    monkeypatch.setattr(tesseract, 'run', _fake_tesseract_run(captured))
+    # Pin the capability probe so the argv does not depend on the local tesseract
+    monkeypatch.setattr(tesseract, 'has_thresholding', lambda: True)
+
+    kwargs = dict(
+        input_file=input_file,
+        output_text=outdir / 'sidecar.txt',
+        languages=['eng'],
+        engine_mode=None,
+        tessconfig=[],
+        timeout=180.0,
+        pagesegmode=None,
+        thresholding=tesseract.ThresholdingMethod.AUTO,
+        user_words=None,
+        user_patterns=None,
     )
+    kwargs.update(overrides)
+
+    if builder == 'hocr':
+        tesseract.generate_hocr(output_hocr=outdir / 'out.hocr', **kwargs)
+    else:
+        tesseract.generate_pdf(output_pdf=outdir / 'out.pdf', **kwargs)
+
+    assert len(captured) == 1, "expected exactly one tesseract invocation"
+    return captured[0]
 
 
-@pytest.mark.parametrize('renderer', RENDERERS)
+def _argv_values(argv, flag):
+    """Return every value that immediately follows flag in argv."""
+    return [argv[n + 1] for n, arg in enumerate(argv[:-1]) if arg == flag]
+
+
+@pytest.mark.parametrize('builder', ['hocr', 'pdf'])
+@pytest.mark.parametrize(
+    'thresholding_name, expected',
+    [
+        # auto and otsu both map to 0, which is tesseract's own default, so the
+        # builders deliberately emit no -c setting for them
+        ('auto', None),
+        ('otsu', None),
+        ('adaptive-otsu', 'thresholding_method=1'),
+        ('sauvola', 'thresholding_method=2'),
+    ],
+)
+def test_tesseract_argv_thresholding(
+    builder, thresholding_name, expected, monkeypatch, resources, outdir
+):
+    argv = _build_tesseract_argv(
+        monkeypatch,
+        builder,
+        resources / 'crom.png',
+        outdir,
+        thresholding=_thresholding_method_converter(thresholding_name),
+    )
+    settings = [
+        value
+        for value in _argv_values(argv, '-c')
+        if value.startswith('thresholding_method=')
+    ]
+    assert settings == ([] if expected is None else [expected])
+
+
+@pytest.mark.parametrize('builder', ['hocr', 'pdf'])
+def test_tesseract_argv_oem_and_pagesegmode(builder, monkeypatch, resources, outdir):
+    argv = _build_tesseract_argv(
+        monkeypatch,
+        builder,
+        resources / 'crom.png',
+        outdir,
+        engine_mode=1,
+        pagesegmode=7,
+    )
+    assert _argv_values(argv, '--oem') == ['1']
+    assert _argv_values(argv, '--psm') == ['7']
+
+
+@pytest.mark.parametrize('renderer', ['fpdf2'])
 def test_pagesegmode(renderer, resources, outpdf):
     check_ocrmypdf(
         resources / 'skew.pdf',

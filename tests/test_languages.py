@@ -30,6 +30,8 @@ def test_german(resources, outdir):
             'deu',  # more commonly installed
             '--sidecar',
             sidecar,
+            '--output-type',
+            'pdf',
             '--plugin',
             'tests/plugins/tesseract_cache.py',
         )

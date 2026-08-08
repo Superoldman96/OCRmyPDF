@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 from unittest.mock import Mock
 
@@ -13,7 +14,7 @@ from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
 
-from ocrmypdf import _pipeline, pdfinfo
+from ocrmypdf import _metadata, _pipeline, pdfinfo
 from ocrmypdf._pipeline import _select_raster_device
 from ocrmypdf.helpers import Resolution
 from ocrmypdf.pdfinfo import Encoding
@@ -215,3 +216,53 @@ def test_select_device_black_mask_stays_mono(tmp_path):
     p = _make_image_mask_pdf(tmp_path / 'b.pdf', b"0 g")
     pageinfo = pdfinfo.PdfInfo(p)[0]
     assert _select_raster_device(pageinfo) == GhostscriptRasterDevice.PNGMONOD
+
+
+# should_linearize is duplicated in _pipeline and _metadata; test both copies so
+# they cannot drift apart.
+@pytest.mark.parametrize('module', [_pipeline, _metadata], ids=['pipeline', 'metadata'])
+@pytest.mark.parametrize(
+    'filesize, expected',
+    [(999_999, False), (1_000_000, False), (1_000_001, True)],
+)
+def test_should_linearize_threshold(module, filesize, expected, tmp_path):
+    working_file = tmp_path / 'working.pdf'
+    working_file.write_bytes(b'\0' * filesize)
+    context = Mock()
+    context.options.fast_web_view = 1.0  # megabytes
+    assert module.should_linearize(working_file, context) is expected
+
+
+def test_should_linearize_disabled_by_infinite_threshold(tmp_path):
+    working_file = tmp_path / 'working.pdf'
+    working_file.write_bytes(b'\0' * 5_000_000)
+    context = Mock()
+    context.options.fast_web_view = float('inf')
+    assert _pipeline.should_linearize(working_file, context) is False
+
+
+def test_triage_pdf_warns_image_dpi_ignored(resources, tmp_path, caplog):
+    """--image-dpi is meaningless for PDF input, so triage() says so."""
+    caplog.set_level(logging.WARNING)
+    output_file = tmp_path / 'triaged.pdf'
+    options = Mock()
+    options.image_dpi = 100
+
+    result = _pipeline.triage(
+        'trivial.pdf', resources / 'trivial.pdf', output_file, options
+    )
+
+    assert result == output_file
+    assert output_file.exists()
+    assert '--image-dpi is being ignored' in caplog.text
+
+
+def test_triage_pdf_silent_without_image_dpi(resources, tmp_path, caplog):
+    caplog.set_level(logging.WARNING)
+    output_file = tmp_path / 'triaged.pdf'
+    options = Mock()
+    options.image_dpi = None
+
+    _pipeline.triage('trivial.pdf', resources / 'trivial.pdf', output_file, options)
+
+    assert '--image-dpi' not in caplog.text

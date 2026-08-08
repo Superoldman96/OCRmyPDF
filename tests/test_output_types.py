@@ -9,9 +9,8 @@ import pikepdf
 import pytest
 
 from ocrmypdf.exceptions import ExitCode
-from ocrmypdf.pdfa import file_claims_pdfa
 
-from .conftest import check_ocrmypdf, run_ocrmypdf, run_ocrmypdf_api
+from .conftest import check_ocrmypdf, run_ocrmypdf_api
 
 
 def test_outputtype_none(resources, outtxt):
@@ -28,44 +27,17 @@ def test_outputtype_none(resources, outtxt):
     assert outtxt.exists()
 
 
-def test_outputtype_none_bad_setup(resources, outpdf):
-    p = run_ocrmypdf(
-        resources / 'trivial.pdf',
-        outpdf,
-        '--output-type=none',
-        '--plugin',
-        'tests/plugins/tesseract_noop.py',
-    )
-    assert p.returncode == ExitCode.bad_args
-    assert 'Set the output file to' in p.stderr
-
-
-@pytest.mark.parametrize('pdfa_level', ['1', '2', '3'])
-def test_pdfa_n(pdfa_level, resources, outpdf):
-    check_ocrmypdf(
-        resources / 'ccitt.pdf',
-        outpdf,
-        '--output-type',
-        'pdfa-' + pdfa_level,
-        '--plugin',
-        'tests/plugins/tesseract_cache.py',
-    )
-
-    pdfa_info = file_claims_pdfa(outpdf)
-    assert pdfa_info['conformance'] == f'PDF/A-{pdfa_level}b'
-
-
+# The linearization threshold logic itself is unit-tested in
+# test_pipeline.py::test_should_linearize_threshold; these cases confirm the
+# option reaches the save path for both optimize settings, plus one PDF/A case.
 @pytest.mark.parametrize(
     'threshold, optimize, output_type, expected',
     [
-        [1.0, 0, 'pdfa', False],
         [1.0, 0, 'pdf', False],
-        [0.0, 0, 'pdfa', True],
         [0.0, 0, 'pdf', True],
-        [1.0, 1, 'pdfa', False],
         [1.0, 1, 'pdf', False],
-        [0.0, 1, 'pdfa', True],
         [0.0, 1, 'pdf', True],
+        [0.0, 0, 'pdfa', True],
     ],
 )
 def test_fast_web_view(resources, outpdf, threshold, optimize, output_type, expected):

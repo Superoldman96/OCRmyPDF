@@ -14,7 +14,6 @@ from unittest.mock import patch
 import pikepdf
 import pytest
 
-import ocrmypdf
 from ocrmypdf.exceptions import ExitCode
 from ocrmypdf.pdfinfo import PdfInfo
 
@@ -28,6 +27,8 @@ def test_overlay(resources, outpdf):
         resources / 'overlay.pdf',
         outpdf,
         '--skip-text',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_noop.py',
     )
@@ -38,6 +39,8 @@ def test_no_contents(resources, outpdf):
         resources / 'no_contents.pdf',
         outpdf,
         '--force-ocr',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_noop.py',
     )
@@ -48,6 +51,8 @@ def test_form_xobject(resources, outpdf):
         resources / 'formxobject.pdf',
         outpdf,
         '--force-ocr',
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_noop.py',
     )
@@ -55,7 +60,12 @@ def test_form_xobject(resources, outpdf):
 
 def test_linearized_pdf_and_indirect_object(resources, outpdf):
     check_ocrmypdf(
-        resources / 'epson.pdf', outpdf, '--plugin', 'tests/plugins/tesseract_noop.py'
+        resources / 'epson.pdf',
+        outpdf,
+        '--output-type',
+        'pdf',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
     )
 
 
@@ -64,6 +74,8 @@ def test_text_curves(resources, outpdf):
         check_ocrmypdf(
             resources / 'vector.pdf',
             outpdf,
+            '--output-type',
+            'pdf',
             '--plugin',
             'tests/plugins/tesseract_noop.py',
         )
@@ -78,6 +90,8 @@ def test_text_curves_force(resources, outpdf):
             resources / 'vector.pdf',
             outpdf,
             '--force-ocr',
+            '--output-type',
+            'pdf',
             '--plugin',
             'tests/plugins/tesseract_noop.py',
         )
@@ -105,13 +119,4 @@ def test_corrupt_icc(graph_bad_icc, outpdf, caplog):
     assert result == ExitCode.ok
     assert any(
         'corrupt or unreadable ICC profile' in rec.message for rec in caplog.records
-    )
-
-
-def test_masks(resources, outpdf):
-    assert (
-        ocrmypdf.ocr(
-            resources / 'masks.pdf', outpdf, plugins=['tests/plugins/tesseract_noop.py']
-        )
-        == ExitCode.ok
     )

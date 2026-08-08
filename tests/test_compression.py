@@ -5,29 +5,31 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from subprocess import run
-
 import pytest
 from PIL import Image
 
 from ocrmypdf.exceptions import ExitCode
 from ocrmypdf.pdfinfo import Colorspace, Encoding, PdfInfo
 
-from .conftest import check_ocrmypdf
+from .conftest import check_ocrmypdf, run_ocrmypdf_api
 
 
+# These run in-process against the image file directly; piping an image over
+# stdin is exercised separately by test_stdio.py.
 @pytest.mark.parametrize(
     'image', ['baiona.png', 'baiona_gray.png', 'baiona_alpha.png', 'baiona_color.jpg']
 )
-def test_compression_preserved(ocrmypdf_exec, resources, image, outpdf):
-    input_file = str(resources / image)
+def test_compression_preserved(resources, image, outpdf, caplog):
+    input_file = resources / image
     output_file = str(outpdf)
 
     im = Image.open(input_file)
-    # Runs: ocrmypdf - output.pdf < testfile
-    with Path(input_file).open('rb') as input_stream:
-        p_args = ocrmypdf_exec + [
+
+    if im.mode in ('RGBA', 'LA'):
+        # If alpha image is input, expect an error
+        exitcode = run_ocrmypdf_api(
+            input_file,
+            outpdf,
             '--optimize',
             '0',
             '--image-dpi',
@@ -36,31 +38,32 @@ def test_compression_preserved(ocrmypdf_exec, resources, image, outpdf):
             'pdf',
             '--plugin',
             'tests/plugins/tesseract_noop.py',
-            '-',
-            output_file,
-        ]
-        p = run(
-            p_args,
-            capture_output=True,
-            stdin=input_stream,
-            text=True,
-            check=False,
         )
+        assert exitcode != ExitCode.ok
+        assert 'alpha' in caplog.text
+        im.close()
+        return
 
-        if im.mode in ('RGBA', 'LA'):
-            # If alpha image is input, expect an error
-            assert p.returncode != ExitCode.ok and 'alpha' in p.stderr
-            return
-
-        assert p.returncode == ExitCode.ok, p.stderr
+    check_ocrmypdf(
+        input_file,
+        outpdf,
+        '--optimize',
+        '0',
+        '--image-dpi',
+        '150',
+        '--output-type',
+        'pdf',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
 
     pdfinfo = PdfInfo(output_file)
 
     pdfimage = pdfinfo[0].images[0]
 
-    if input_file.endswith('.png'):
+    if image.endswith('.png'):
         assert pdfimage.enc != Encoding.jpeg, "Lossless compression changed to lossy!"
-    elif input_file.endswith('.jpg'):
+    elif image.endswith('.jpg'):
         assert pdfimage.enc == Encoding.jpeg, "Lossy compression changed to lossless!"
     if im.mode.startswith('RGB') or im.mode.startswith('BGR'):
         assert pdfimage.color == Colorspace.rgb, "Colorspace changed"
@@ -77,36 +80,26 @@ def test_compression_preserved(ocrmypdf_exec, resources, image, outpdf):
         ('baiona_color.jpg', 'lossless'),
     ],
 )
-def test_compression_changed(ocrmypdf_exec, resources, image, compression, outpdf):
-    input_file = str(resources / image)
+def test_compression_changed(resources, image, compression, outpdf):
+    input_file = resources / image
     output_file = str(outpdf)
 
     im = Image.open(input_file)
 
-    # Runs: ocrmypdf - output.pdf < testfile
-    with Path(input_file).open('rb') as input_stream:
-        p_args = ocrmypdf_exec + [
-            '--image-dpi',
-            '150',
-            '--output-type',
-            'pdfa',
-            '--optimize',
-            '0',
-            '--pdfa-image-compression',
-            compression,
-            '--plugin',
-            'tests/plugins/tesseract_noop.py',
-            '-',
-            output_file,
-        ]
-        p = run(
-            p_args,
-            capture_output=True,
-            stdin=input_stream,
-            text=True,
-            check=False,
-        )
-        assert p.returncode == ExitCode.ok, p.stderr
+    check_ocrmypdf(
+        input_file,
+        outpdf,
+        '--image-dpi',
+        '150',
+        '--output-type',
+        'pdfa',
+        '--optimize',
+        '0',
+        '--pdfa-image-compression',
+        compression,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
 
     pdfinfo = PdfInfo(output_file)
 

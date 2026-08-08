@@ -18,6 +18,8 @@ def test_sidecar_pagecount(resources, outpdf):
         '--skip-text',
         '--sidecar',
         sidecar,
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_cache.py',
     )
@@ -42,6 +44,8 @@ def test_sidecar_nonempty(resources, outpdf):
         outpdf,
         '--sidecar',
         sidecar,
+        '--output-type',
+        'pdf',
         '--plugin',
         'tests/plugins/tesseract_cache.py',
     )

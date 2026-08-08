@@ -23,15 +23,3 @@ def test_argsfile(resources, outdir, outpdf):
             file=argsfile,
         )
     check_ocrmypdf(resources / 'graph.pdf', outpdf, '@' + str(path_argsfile))
-
-
-def test_image_dpi_not_image(caplog, resources, outpdf):
-    check_ocrmypdf(
-        resources / 'trivial.pdf',
-        outpdf,
-        '--image-dpi',
-        '100',
-        '--plugin',
-        'tests/plugins/tesseract_noop.py',
-    )
-    assert '--image-dpi is being ignored' in caplog.text
