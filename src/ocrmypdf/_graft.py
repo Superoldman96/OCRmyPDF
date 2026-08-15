@@ -176,14 +176,52 @@ def _ensure_dictionary(obj: Dictionary | Stream, name: Name):
     return obj[name]
 
 
-def strip_invisible_text(pdf: Pdf, page: Page):
+def _strip_invisible_text_from_form_xobjects(
+    pdf: Pdf,
+    resources: Object,
+    name: Object,
+    inherited_render_mode: int,
+    visited: set[tuple[int, int]],
+) -> None:
+    """Recurse into the Form XObject drawn by ``name Do`` and strip it too."""
+    try:
+        xobj = resources[Name.XObject][cast('Name', name)]
+    except (KeyError, TypeError):
+        return  # dangling or non-dictionary resource; nothing we can strip
+    if xobj.get(Name.Subtype) != Name.Form:
+        return  # image XObjects carry no text operators
+    key = (xobj.objgen[0], xobj.objgen[1])
+    if key in visited or key == (0, 0):
+        # Already handled, or a direct object we cannot identify; a Form
+        # XObject may reference itself transitively, so never revisit one.
+        return
+    visited.add(key)
+    xobj.write(
+        _strip_invisible_text_from_content(
+            pdf,
+            cast('Stream', xobj),
+            xobj.get(Name.Resources, Dictionary()),
+            visited,
+            inherited_render_mode,
+        )
+    )
+
+
+def _strip_invisible_text_from_content(
+    pdf: Pdf,
+    obj: Page | Stream,
+    resources: Object,
+    visited: set[tuple[int, int]],
+    initial_render_mode: int = 0,
+) -> bytes:
+    """Return ``obj``'s content stream with render-mode-3 text objects removed."""
     stream = []
     in_text_obj = False
-    render_mode = 0
+    render_mode = initial_render_mode
     render_mode_stack = []
     text_objects = []
 
-    for instruction in parse_content_stream(page, ''):
+    for instruction in parse_content_stream(obj, ''):
         operands, operator = instruction.operands, instruction.operator
         if operator == Operator('Tr'):
             # operands[0] is already a plain int under pikepdf's default
@@ -198,6 +236,14 @@ def strip_invisible_text(pdf: Pdf, page: Page):
             # IndexError is raised if stack is empty; try to carry on
             with suppress(IndexError):
                 render_mode = render_mode_stack.pop()
+
+        if operator == Operator('Do') and not in_text_obj and operands:
+            # OCRmyPDF grafts its own text layer as a Form XObject, so the
+            # invisible text is not in the page content stream at all. The
+            # current render mode is inherited across the Do.
+            _strip_invisible_text_from_form_xobjects(
+                pdf, resources, operands[0], render_mode, visited
+            )
 
         if not in_text_obj:
             if operator == Operator('BT'):
@@ -215,8 +261,14 @@ def strip_invisible_text(pdf: Pdf, page: Page):
 
     # pikepdf's Collection[...] parameter doesn't structurally match our
     # _ObjectList-based tuples even though it works fine at runtime.
-    content_stream = unparse_content_stream(
+    return unparse_content_stream(
         cast('list[tuple[Collection[Object], Operator]]', stream)
+    )
+
+
+def strip_invisible_text(pdf: Pdf, page: Page):
+    content_stream = _strip_invisible_text_from_content(
+        pdf, page, page.obj.get(Name.Resources, Dictionary()), set()
     )
     page.Contents = Stream(pdf, content_stream)
 

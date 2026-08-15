@@ -157,3 +157,80 @@ def test_strip_invisble_text():
         'Number of visible text elements did not change'
     )
     assert count('invisible', page) == 0, 'No invisible elems left'
+
+
+def test_strip_invisible_text_in_form_xobject():
+    """Invisible text inside a Form XObject is stripped too.
+
+    Regression test for #1730. OCRmyPDF grafts its own OCR text layer as a
+    Form XObject and appends ``/OCR-xxxx Do`` to the page (see
+    ``OcrGrafter._graft_fpdf2_text_layer``), so on OCRmyPDF's own output the
+    invisible text is not in the page content stream at all and ``--mode
+    strip`` used to be a no-op.
+    """
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page()
+    font = pdf.make_indirect(
+        pikepdf.Dictionary(
+            Type=pikepdf.Name.Font,
+            Subtype=pikepdf.Name.Type1,
+            BaseFont=pikepdf.Name.Helvetica,
+        )
+    )
+
+    def text(string, render_mode):
+        return b'BT\n%d Tr\n/F0 12 Tf\n72 720 Td\n(%s) Tj\nET\n' % (
+            render_mode,
+            string,
+        )
+
+    # The grafted text layer: invisible OCR text plus a visible run that must
+    # survive, exactly as they would sit inside an /OCR-... Form XObject.
+    xobj = pdf.make_stream(text(b'invisible', 3) + text(b'visible-in-form', 0))
+    xobj.Type = pikepdf.Name.XObject
+    xobj.Subtype = pikepdf.Name.Form
+    xobj.FormType = 1
+    xobj.BBox = pikepdf.Array([0, 0, 612, 792])
+    xobj.Resources = pikepdf.Dictionary(Font=pikepdf.Dictionary(F0=font))
+    page.obj[pikepdf.Name.Resources] = pikepdf.Dictionary(
+        Font=pikepdf.Dictionary(F0=font),
+        XObject=pikepdf.Dictionary({'/OCR-abc': xobj}),
+    )
+    page.Contents = pikepdf.Stream(pdf, text(b'visible', 0) + b'q\n/OCR-abc Do\nQ\n')
+
+    def strings(obj):
+        return [
+            bytes(operands[0])
+            for operands, operator in pikepdf.parse_content_stream(obj, '')
+            if operator == pikepdf.Operator('Tj')
+        ]
+
+    assert strings(page) == [b'visible']
+    assert strings(xobj) == [b'invisible', b'visible-in-form']
+
+    ocrmypdf._graft.strip_invisible_text(pdf, page)
+
+    assert strings(page) == [b'visible'], 'page text must be untouched'
+    assert strings(xobj) == [b'visible-in-form'], (
+        'invisible text in the Form XObject must be removed, visible text kept'
+    )
+
+
+def test_strip_invisible_text_with_self_referential_form():
+    """A Form XObject that draws itself must not recurse forever (#1730)."""
+    pdf = pikepdf.Pdf.new()
+    page = pdf.add_blank_page()
+    xobj = pdf.make_stream(b'BT\n3 Tr\n/F0 12 Tf\n(invisible) Tj\nET\n/Self Do\n')
+    xobj.Type = pikepdf.Name.XObject
+    xobj.Subtype = pikepdf.Name.Form
+    xobj.FormType = 1
+    xobj.BBox = pikepdf.Array([0, 0, 612, 792])
+    xobj.Resources = pikepdf.Dictionary(XObject=pikepdf.Dictionary({'/Self': xobj}))
+    page.obj[pikepdf.Name.Resources] = pikepdf.Dictionary(
+        XObject=pikepdf.Dictionary({'/Self': xobj})
+    )
+    page.Contents = pikepdf.Stream(pdf, b'/Self Do\n')
+
+    ocrmypdf._graft.strip_invisible_text(pdf, page)
+
+    assert b'invisible' not in xobj.read_bytes()
