@@ -750,11 +750,12 @@ class Fpdf2PdfRenderer:
                 # that skip positional analysis (pdfminer defaults, pypdf)
                 # join them to the next line's first word. Tesseract's own
                 # PDF renderer does the same. Skip for CJK, which must
-                # concatenate across lines without separators.
-                if self._is_cjk_only(word.text):
-                    text_to_render = word.text
-                else:
+                # concatenate across lines without separators, and for
+                # whitespace-only words, which need no further separation.
+                if word.text.strip() and not self._is_cjk_only(word.text):
                     text_to_render = word.text + ' '
+                else:
+                    text_to_render = word.text
 
             # Use word_tz (fits word into its hOCR bbox) — Td handles
             # inter-word gaps, so Tz should not stretch to fill them.
