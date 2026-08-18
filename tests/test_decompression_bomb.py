@@ -5,9 +5,27 @@
 
 from __future__ import annotations
 
+import PIL.Image
 import pytest
 
-from .conftest import run_ocrmypdf_api
+from .conftest import preserve_pil_max_image_pixels, run_ocrmypdf_api
+
+
+def test_max_image_pixels_restored_between_tests():
+    # Running the pipeline in-process with an explicit --max-image-mpixels
+    # mutates the process-global PIL.Image.MAX_IMAGE_PIXELS. The autouse
+    # conftest fixture must restore it so the limit does not leak into
+    # subsequent tests in the same worker.
+    fixture_body = preserve_pil_max_image_pixels.__wrapped__
+    saved = PIL.Image.MAX_IMAGE_PIXELS
+    try:
+        gen = fixture_body()
+        next(gen)
+        PIL.Image.MAX_IMAGE_PIXELS = 1_000_000
+        next(gen, None)
+        assert saved == PIL.Image.MAX_IMAGE_PIXELS
+    finally:
+        PIL.Image.MAX_IMAGE_PIXELS = saved
 
 
 def test_decompression_bomb_error(resources, outpdf, caplog):

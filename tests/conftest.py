@@ -13,6 +13,7 @@ import warnings
 from pathlib import Path
 from subprocess import CompletedProcess, run
 
+import PIL.Image
 import pytest
 
 from ocrmypdf import api, pdfinfo
@@ -41,6 +42,21 @@ def suppress_gs106_warning():
     root_logger.addFilter(warning_filter)
     yield
     root_logger.removeFilter(warning_filter)
+
+
+@pytest.fixture(autouse=True)
+def preserve_pil_max_image_pixels():
+    """Restore PIL.Image.MAX_IMAGE_PIXELS after each test.
+
+    Running the pipeline in-process with an explicit max_image_mpixels
+    (including the CLI default) sets the process-global Pillow limit and
+    leaves it set. Since max_image_mpixels=None means "respect the host's
+    limit", a low limit from one test can make unrelated later tests in the
+    same worker fail with DecompressionBombError.
+    """
+    saved = PIL.Image.MAX_IMAGE_PIXELS
+    yield
+    PIL.Image.MAX_IMAGE_PIXELS = saved
 
 
 def is_linux():
