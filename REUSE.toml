@@ -64,7 +64,7 @@ SPDX-FileCopyrightText = "(C) 2012 SmokeyJoe"
 SPDX-License-Identifier = "GFDL-1.2-or-later or CC-BY-SA-3.0"
 
 [[annotations]]
-path = ["tests/resources/c02-22.pdf", "tests/resources/multipage.pdf"]
+path = ["tests/resources/c03-29.pdf", "tests/resources/multipage.pdf"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "Public domain"
 SPDX-License-Identifier = "public-domain"

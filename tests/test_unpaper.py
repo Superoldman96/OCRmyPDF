@@ -23,8 +23,8 @@ from .conftest import check_ocrmypdf, have_unpaper, run_ocrmypdf_api
 needs_unpaper = pytest.mark.skipif(not have_unpaper(), reason="requires unpaper")
 
 
-def test_no_unpaper(resources, no_outpdf):
-    input_ = fspath(resources / "c02-22.pdf")
+def test_no_unpaper(jpeg_scan, no_outpdf):
+    input_ = fspath(jpeg_scan)
     output = fspath(no_outpdf)
 
     options, pm = get_options_and_plugins(["--clean", input_, output])
@@ -36,8 +36,8 @@ def test_no_unpaper(resources, no_outpdf):
         mock.assert_called()
 
 
-def test_old_unpaper(resources, no_outpdf):
-    input_ = fspath(resources / "c02-22.pdf")
+def test_old_unpaper(jpeg_scan, no_outpdf):
+    input_ = fspath(jpeg_scan)
     output = fspath(no_outpdf)
 
     options, pm = get_options_and_plugins(["--clean", input_, output])
@@ -49,8 +49,8 @@ def test_old_unpaper(resources, no_outpdf):
         mock.assert_called()
 
 
-def test_unpaper_version_chatter(resources, no_outpdf):
-    input_ = fspath(resources / "c02-22.pdf")
+def test_unpaper_version_chatter(jpeg_scan, no_outpdf):
+    input_ = fspath(jpeg_scan)
     output = fspath(no_outpdf)
 
     options, pm = get_options_and_plugins(["--clean", input_, output])

@@ -425,11 +425,6 @@ def generate_pdfa(
     stop_on_soft_error,
 ):
     """Generate a PDF/A from the list of PDF pages and PDF/A metadata."""
-    # Normalize output_type at point of use
-    output_type = context.options.output_type
-    if output_type == 'pdfa':
-        output_type = 'pdfa-2'
-
     compression = _resolve_auto_compression(
         context.options.ghostscript.pdfa_image_compression,
         context.options.optimize,

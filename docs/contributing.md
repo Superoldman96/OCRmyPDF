@@ -24,6 +24,58 @@ style is that strings shown to the user are always in double quotes
 
 New features should come with tests that confirm their correctness.
 
+### Tesseract OCR cache
+
+Running Tesseract on every test would make the test suite far too slow, so
+the results of most Tesseract invocations are recorded in `tests/cache/`
+and replayed by the `tests/plugins/tesseract_cache.py` plugin. The cache is
+committed to the repository, so a contributor with a different (or no)
+Tesseract still gets the same OCR output.
+
+Entries live at
+`tests/cache/v<CACHE_VERSION>/<key>/<argv-slug>/{stdout,stderr,hocr,pdf,txt}.bin`.
+The key for a file in `tests/resources/` is its stem plus the first 8 hex
+digits of the SHA-256 of its contents; inputs generated during a test run
+are keyed by stem alone, because their bytes vary from run to run.
+`CACHE_INFO.json` records the Tesseract version that produced the tree and
+`manifest.jsonl` logs each entry as it is created. Neither is touched on a
+cache hit, so a normal test run leaves the working tree clean.
+
+There are three ways the cache can go stale, and only one of them needs
+your attention:
+
+- **A test resource changed.** Nothing to do. The digest in the cache key
+  changes with the file, so affected entries are regenerated automatically
+  and the old ones can be deleted. `tests/test_tesseract_cache.py` fails if
+  a digest-keyed folder no longer matches any resource, which is your cue
+  to delete the orphaned folder.
+- **OCRmyPDF changed the images it sends to Tesseract** (preprocessing,
+  rasterization, DPI selection, image optimization on the OCR path). The
+  cached answers now belong to different questions, and the cache would
+  silently replay them. Bump `CACHE_VERSION` in
+  `tests/plugins/tesseract_cache.py`, delete the old `tests/cache/v<N>/`
+  tree, and regenerate.
+- **Tesseract itself changed.** `pytest_sessionstart` in `tests/conftest.py`
+  compares the installed Tesseract's major.minor version against
+  `CACHE_INFO.json` and warns on a mismatch. Set
+  `OCRMYPDF_TEST_CACHE_STRICT=1` to turn that warning into an immediate
+  session abort, which is useful in CI. A mismatch is not automatically a
+  problem — it means the cache no longer reflects what your Tesseract would
+  produce, so regenerate before trusting or updating it.
+
+To regenerate the cache:
+
+```bash
+rm -rf tests/cache/v1  # or whatever the current CACHE_VERSION is
+pytest                 # with the reference Tesseract installed
+pytest tests/test_tesseract_cache.py  # integrity check must pass
+git add tests/cache
+git commit -m "Regenerate Tesseract cache (tesseract 5.5.1)"
+```
+
+Always name the Tesseract version in the commit message, and regenerate the
+whole tree with one Tesseract version rather than mixing versions.
+
 ## New dependencies
 
 If you are proposing a change that will require a new dependency, we

@@ -13,6 +13,8 @@ import signal
 import sys
 from contextlib import suppress
 
+from pydantic import ValidationError
+
 from ocrmypdf import __version__
 from ocrmypdf._pipelines.ocr import run_pipeline_cli
 from ocrmypdf._validation import check_options
@@ -37,6 +39,15 @@ def sigbus(*args):
     raise InputFileError("Lost access to the input file")
 
 
+def _describe_options_error(exc: ValueError) -> str:
+    """Reduce an options validation error to the part a CLI user needs to read."""
+    if isinstance(exc, ValidationError):
+        return '\n'.join(
+            str(error['msg']).removeprefix('Value error, ') for error in exc.errors()
+        )
+    return str(exc)
+
+
 def run(args=None):
     """Run the ocrmypdf command line interface."""
     # Protect the real stdout before loading plugins or starting any worker
@@ -44,7 +55,17 @@ def run(args=None):
     # stray writes from plugins or libraries are diverted to stderr.
     configure_stdout_protection()
 
-    options, plugin_manager = get_options_and_plugins(args=args)
+    # Logging is not configured yet, since its settings come from the options we
+    # are about to parse. logging.lastResort prints the bare message to stderr,
+    # which matches the format configure_logging() would install anyway.
+    try:
+        options, plugin_manager = get_options_and_plugins(args=args)
+    except BadArgsError as e:
+        log.error(e)
+        return e.exit_code
+    except ValueError as e:
+        log.error(_describe_options_error(e))
+        return ExitCode.bad_args
 
     with suppress(AttributeError, PermissionError):
         os.nice(5)

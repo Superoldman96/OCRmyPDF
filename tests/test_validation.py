@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pikepdf
@@ -16,10 +17,10 @@ from ocrmypdf._exec.tesseract import TesseractVersion
 from ocrmypdf._options import OcrOptions
 from ocrmypdf.api import create_options, setup_plugin_infrastructure
 from ocrmypdf.cli import get_parser
-from ocrmypdf.exceptions import BadArgsError, MissingDependencyError
+from ocrmypdf.exceptions import BadArgsError, ExitCode, MissingDependencyError
 from ocrmypdf.pdfinfo import PdfInfo
 
-from .conftest import run_ocrmypdf_api
+from .conftest import run_ocrmypdf, run_ocrmypdf_api
 
 
 def make_opts_pm(input_file='a.pdf', output_file='b.pdf', language='eng', **kwargs):
@@ -338,3 +339,75 @@ def test_sidecar_equals_output(resources, no_outpdf):
 def test_devnull_sidecar(resources):
     with pytest.raises(BadArgsError, match=r'--sidecar.*NUL'):
         run_ocrmypdf_api(resources / 'trivial.pdf', os.devnull, '--sidecar')
+
+
+def test_output_type_none_requires_stdout(outpdf):
+    with pytest.raises(ValueError, match='Set the output file to'):
+        make_ocr_opts(output_file=outpdf, output_type='none')
+
+
+def test_options_validation_error_is_not_a_traceback(resources, outpdf):
+    """Options rejected while parsing must exit cleanly, not crash."""
+    p = run_ocrmypdf(
+        resources / 'trivial.pdf',
+        outpdf,
+        '--output-type=none',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert p.returncode == ExitCode.bad_args
+    assert 'Traceback' not in p.stderr
+    assert 'Set the output file to' in p.stderr
+
+
+def test_argparse_error_still_exits_2(resources, outpdf):
+    p = run_ocrmypdf(resources / 'trivial.pdf', outpdf, '--no-such-option')
+    assert p.returncode == 2
+
+
+@pytest.fixture
+def protected_file(outdir):
+    protected_file = outdir / 'protected.pdf'
+    protected_file.touch()
+    protected_file.chmod(0o400)  # Read-only
+    yield protected_file
+
+
+@pytest.mark.skipif(
+    os.name == 'nt' or os.geteuid() == 0, reason="root can write to anything"
+)
+def test_destination_not_writable(resources, protected_file):
+    exitcode = run_ocrmypdf_api(
+        resources / 'jbig2.pdf',
+        protected_file,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.file_access_error
+
+
+def test_output_is_dir(resources, outdir, caplog):
+    exitcode = run_ocrmypdf_api(
+        resources / 'trivial.pdf',
+        outdir,
+        '--force-ocr',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.file_access_error
+    assert 'is not a writable file' in caplog.text
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="symlink needs admin permissions")
+def test_output_is_symlink(resources, outdir):
+    sym = Path(outdir / 'this_is_a_symlink')
+    sym.symlink_to(outdir / 'out.pdf')
+    exitcode = run_ocrmypdf_api(
+        resources / 'trivial.pdf',
+        sym,
+        '--force-ocr',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.ok
+    assert (outdir / 'out.pdf').stat().st_size > 0, 'target file not created'

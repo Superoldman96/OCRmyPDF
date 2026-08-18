@@ -5,11 +5,16 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from unittest.mock import patch
+
 import pikepdf
 import pytest
 from pikepdf import Name
 
 from ocrmypdf._exec import verapdf
+from ocrmypdf.exceptions import MissingDependencyError
 from ocrmypdf.pdfa import (
     _pdfa_part_conformance,
     add_pdfa_metadata,
@@ -45,6 +50,91 @@ class TestVerapdfModule:
         result = verapdf.validate(test_pdf, '2b')
         assert not result.valid
         assert result.failed_rules > 0
+
+
+def _report(**validation_result) -> str:
+    """Build a verapdf --format json report containing one job."""
+    return json.dumps({'report': {'jobs': [{'validationResult': [validation_result]}]}})
+
+
+def _run_verapdf(tmp_path, stdout, returncode=0):
+    """Run verapdf.validate with the verapdf subprocess replaced."""
+    captured = {}
+
+    def fake_run(args, **kwargs):
+        captured['args'] = list(args)
+        return subprocess.CompletedProcess(args, returncode, stdout=stdout, stderr=b'')
+
+    with patch('ocrmypdf._exec.verapdf.run', side_effect=fake_run):
+        result = verapdf.validate(tmp_path / 'in.pdf', '2b')
+    return result, captured['args']
+
+
+class TestValidateFailures:
+    """verapdf.validate must degrade gracefully when verapdf misbehaves."""
+
+    def test_binary_missing(self, tmp_path):
+        with (
+            patch(
+                'ocrmypdf._exec.verapdf.run', side_effect=FileNotFoundError('verapdf')
+            ),
+            pytest.raises(MissingDependencyError, match='verapdf'),
+        ):
+            verapdf.validate(tmp_path / 'in.pdf', '2b')
+
+    def test_command_line(self, tmp_path):
+        _result, args = _run_verapdf(tmp_path, _report(details={'failedRules': 0}))
+        assert args[0] == 'verapdf'
+        assert args[args.index('--flavour') + 1] == '2b'
+        assert args[args.index('--format') + 1] == 'json'
+        assert args[-1] == str(tmp_path / 'in.pdf')
+
+    @pytest.mark.parametrize(
+        'stdout',
+        [b'', b'verapdf: command failed', b'{"report": '],
+        ids=['empty', 'message', 'truncated-json'],
+    )
+    def test_unparseable_output(self, tmp_path, stdout):
+        result, _args = _run_verapdf(tmp_path, stdout, returncode=1)
+        assert result.valid is False
+        assert result.failed_rules == -1
+        assert 'Failed to parse verapdf output' in result.message
+
+    def test_no_jobs_in_report(self, tmp_path):
+        result, _args = _run_verapdf(tmp_path, json.dumps({'report': {'jobs': []}}))
+        assert result == verapdf.ValidationResult(
+            False, -1, 'No validation jobs in result'
+        )
+
+    def test_no_validation_result_in_job(self, tmp_path):
+        result, _args = _run_verapdf(
+            tmp_path, json.dumps({'report': {'jobs': [{'validationResult': []}]}})
+        )
+        assert result == verapdf.ValidationResult(
+            False, -1, 'No validation result in output'
+        )
+
+    def test_report_of_wrong_type(self, tmp_path):
+        """A JSON document of the wrong shape is a parse failure, not a crash."""
+        result, _args = _run_verapdf(tmp_path, json.dumps({'report': 'nonsense'}))
+        assert result.valid is False
+        assert result.failed_rules == -1
+        assert 'Failed to parse verapdf output' in result.message
+
+    def test_passing_validation(self, tmp_path):
+        result, _args = _run_verapdf(tmp_path, _report(details={'failedRules': 0}))
+        assert result == verapdf.ValidationResult(True, 0, 'PDF/A validation passed')
+
+    def test_failing_validation(self, tmp_path):
+        result, _args = _run_verapdf(tmp_path, _report(details={'failedRules': 7}))
+        assert result.valid is False
+        assert result.failed_rules == 7
+        assert '7 rule violations' in result.message
+
+    def test_missing_details_counts_as_passing(self, tmp_path):
+        """No details means no failures were reported."""
+        result, _args = _run_verapdf(tmp_path, _report())
+        assert result.valid is True
 
 
 class TestPdfaPartConformance:

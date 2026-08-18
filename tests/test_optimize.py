@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import logging
 from io import BytesIO
 from os import fspath
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import img2pdf
@@ -19,7 +21,10 @@ from ocrmypdf import optimize as opt
 from ocrmypdf._exec import ghostscript, jbig2enc, pngquant
 from ocrmypdf._exec.ghostscript import GS_GENERATED_PDFA, rasterize_pdf
 from ocrmypdf._options import OcrOptions
+from ocrmypdf.builtin_plugins import optimize as optimize_plugin
+from ocrmypdf.builtin_plugins.optimize import OptimizeOptions
 from ocrmypdf.cli import get_options_and_plugins
+from ocrmypdf.exceptions import MissingDependencyError
 from ocrmypdf.helpers import IMG2PDF_KWARGS, Resolution
 from ocrmypdf.optimize import PdfImage, extract_image_filter
 from ocrmypdf.pluginspec import GhostscriptRasterDevice
@@ -85,20 +90,20 @@ def test_jpg_png_params(resources, outpdf):
     )
 
 
-def test_jpeg_quality_cli_flag_reaches_options(resources, outpdf):
+def test_jpeg_quality_cli_flag_reaches_options(jpeg_scan, outpdf):
     # Regression test for #1723: --jpeg-quality was silently dropped by
     # namespace_to_options() because the argparse dest ('jpeg_quality') did
     # not match the OcrOptions field it was checked against.
-    input_ = fspath(resources / 'c02-22.pdf')
+    input_ = fspath(jpeg_scan)
     options, _pm = get_options_and_plugins(
         ['--jpeg-quality', '10', input_, fspath(outpdf)]
     )
     assert options.jpeg_quality == 10
 
 
-def test_jpg_quality_cli_alias_reaches_options(resources, outpdf):
+def test_jpg_quality_cli_alias_reaches_options(jpeg_scan, outpdf):
     # --jpg-quality is a hidden alias for --jpeg-quality (same argparse dest).
-    input_ = fspath(resources / 'c02-22.pdf')
+    input_ = fspath(jpeg_scan)
     options, _pm = get_options_and_plugins(
         ['--jpg-quality', '42', input_, fspath(outpdf)]
     )
@@ -493,3 +498,186 @@ def test_extract_image_filter_with_rgb_smask_matte():
         Matte=Array([1, 2, 3]),
     )
     assert extract_image_filter(image, None) is None
+
+
+OPTIMIZE_LOGGER = 'ocrmypdf.builtin_plugins.optimize'
+
+
+def _plugin_opts(*args):
+    options, _pm = get_options_and_plugins([*args, 'a.pdf', 'b.pdf'])
+    return options
+
+
+class TestOptimizeOptionsValidation:
+    """Consistency warnings raised while validating the option model."""
+
+    @pytest.mark.parametrize(
+        'kwargs',
+        [
+            {'png_quality': 50},
+            {'jpeg_quality': 50},
+            {'png_quality': 50, 'jpeg_quality': 50},
+        ],
+    )
+    def test_quality_settings_ignored_at_level_zero(self, caplog, kwargs):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        options = OptimizeOptions(level=0, **kwargs)
+        # The settings are retained; the user is merely told they do nothing
+        for key, value in kwargs.items():
+            assert getattr(options, key) == value
+        assert 'will be ignored because --optimize=0' in caplog.text
+
+    def test_no_warning_when_quality_not_set(self, caplog):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        OptimizeOptions(level=0)
+        assert caplog.text == ''
+
+    @pytest.mark.parametrize('level', [1, 2, 3])
+    def test_no_warning_when_optimization_enabled(self, caplog, level):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        OptimizeOptions(level=level, png_quality=50, jpeg_quality=50)
+        assert caplog.text == ''
+
+    @pytest.mark.parametrize('level', [0, 1])
+    def test_no_external_program_warnings_below_level_2(self, caplog, level):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        OptimizeOptions(level=level).validate_with_context(
+            {'pngquant': False, 'jbig2enc': False}
+        )
+        assert caplog.text == ''
+
+    @pytest.mark.parametrize('level', [2, 3])
+    @pytest.mark.parametrize('pngquant_available', [True, False])
+    @pytest.mark.parametrize('jbig2enc_available', [True, False])
+    def test_missing_external_programs_warn_at_level_2(
+        self, caplog, level, pngquant_available, jbig2enc_available
+    ):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        OptimizeOptions(level=level).validate_with_context(
+            {'pngquant': pngquant_available, 'jbig2enc': jbig2enc_available}
+        )
+        assert ('pngquant is not available' in caplog.text) is not pngquant_available
+        assert ('jbig2enc is not available' in caplog.text) is not jbig2enc_available
+
+    def test_unknown_program_counts_as_unavailable(self, caplog):
+        """An empty availability dict must not be read as 'everything present'."""
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        OptimizeOptions(level=2).validate_with_context({})
+        assert 'pngquant is not available' in caplog.text
+        assert 'jbig2enc is not available' in caplog.text
+
+
+class TestCheckOptionsDeprecations:
+    def test_jbig2_lossy_is_deprecated(self, caplog):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        optimize_plugin.check_options(_plugin_opts('--jbig2-lossy'))
+        assert '--jbig2-lossy option is deprecated' in caplog.text
+
+    def test_jbig2_page_group_size_is_deprecated(self, caplog):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        optimize_plugin.check_options(_plugin_opts('--jbig2-page-group-size', '5'))
+        assert '--jbig2-page-group-size option is deprecated' in caplog.text
+
+    def test_no_deprecation_warnings_by_default(self, caplog):
+        caplog.set_level(logging.WARNING, logger=OPTIMIZE_LOGGER)
+        optimize_plugin.check_options(_plugin_opts())
+        assert 'deprecated' not in caplog.text
+
+
+class TestCheckOptionsExternalPrograms:
+    """-O2 needs pngquant; jbig2enc is only recommended."""
+
+    def test_missing_pngquant_is_fatal_at_level_2(self, caplog):
+        caplog.set_level(logging.WARNING)
+        with (
+            patch.object(
+                pngquant, 'version', side_effect=FileNotFoundError('pngquant')
+            ),
+            pytest.raises(MissingDependencyError, match='pngquant'),
+        ):
+            optimize_plugin.check_options(_plugin_opts('--optimize', '2'))
+
+    def test_missing_jbig2enc_only_warns_at_level_2(self, caplog):
+        caplog.set_level(logging.WARNING)
+        with (
+            patch.object(pngquant, 'version', return_value=Version('3.0')),
+            patch.object(jbig2enc, 'version', side_effect=FileNotFoundError('jbig2')),
+        ):
+            optimize_plugin.check_options(_plugin_opts('--optimize', '2'))
+        assert 'not required, so we will proceed' in caplog.text
+
+    @pytest.mark.parametrize('level', ['0', '1'])
+    def test_external_programs_not_required_below_level_2(self, level):
+        """-O1 uses jbig2enc opportunistically, so do not nag about it."""
+        with (
+            patch.object(
+                pngquant, 'version', side_effect=FileNotFoundError('pngquant')
+            ),
+            patch.object(jbig2enc, 'version', side_effect=FileNotFoundError('jbig2')),
+        ):
+            assert (
+                optimize_plugin.check_options(_plugin_opts('--optimize', level)) is None
+            )
+
+
+class TestOptimizePdfMessages:
+    """The optimize_pdf hook reports what it could not do."""
+
+    @pytest.fixture
+    def run_optimize_pdf(self, outdir):
+        def _run(optimize_level, *, jbig2=True, pngquant_=True):
+            options = _plugin_opts('--optimize', optimize_level, '--output-type', 'pdf')
+            context = SimpleNamespace(options=options)
+            out = outdir / 'out.pdf'
+            with (
+                patch.object(
+                    optimize_plugin, 'optimize', return_value=out
+                ) as optimizer,
+                patch.object(jbig2enc, 'available', return_value=jbig2),
+                patch.object(pngquant, 'available', return_value=pngquant_),
+            ):
+                result, messages = optimize_plugin.optimize_pdf(
+                    outdir / 'in.pdf',
+                    out,
+                    context,
+                    executor=None,
+                    linearize=False,
+                )
+            assert optimizer.called
+            # Save settings must reach the optimizer, not be silently dropped
+            save_settings = optimizer.call_args.args[3]
+            assert save_settings['linearize'] is False
+            return result, messages
+
+        return _run
+
+    def test_optimization_disabled(self, run_optimize_pdf, outdir):
+        result, messages = run_optimize_pdf('0', jbig2=False, pngquant_=False)
+        assert result == outdir / 'out.pdf'
+        assert messages == ["Optimization was disabled."]
+
+    def test_all_optional_dependencies_present(self, run_optimize_pdf):
+        _result, messages = run_optimize_pdf('1')
+        assert messages == []
+
+    @pytest.mark.parametrize(
+        ('jbig2', 'pngquant_', 'expected'),
+        [
+            (False, True, ['jbig2']),
+            (True, False, ['pngquant']),
+            (False, False, ['jbig2', 'pngquant']),
+        ],
+    )
+    def test_missing_optional_dependencies_are_reported(
+        self, run_optimize_pdf, jbig2, pngquant_, expected
+    ):
+        _result, messages = run_optimize_pdf('1', jbig2=jbig2, pngquant_=pngquant_)
+        assert len(messages) == len(expected)
+        for message, program in zip(messages, expected, strict=True):
+            assert f"optional dependency '{program}' was not found" in message
+
+
+@pytest.mark.parametrize(('level', 'enabled'), [(0, False), (1, True), (3, True)])
+def test_is_optimization_enabled(level, enabled):
+    context = SimpleNamespace(options=_plugin_opts('--optimize', str(level)))
+    assert optimize_plugin.is_optimization_enabled(context) is enabled
