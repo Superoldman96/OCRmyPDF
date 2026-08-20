@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 
 
@@ -38,7 +38,7 @@ class RWLock:
         return getattr(self._local, 'depth', 0)
 
     @contextmanager
-    def shared(self) -> Iterator[None]:
+    def shared(self) -> Generator[None]:
         """Hold the lock shared for the duration of the block."""
         if self._depth:
             # Already held by this thread; re-entering must not queue behind a
@@ -57,7 +57,7 @@ class RWLock:
             self._release_shared()
 
     @contextmanager
-    def exclusive(self) -> Iterator[Callable[[], None]]:
+    def exclusive(self) -> Generator[Callable[[], None]]:
         """Hold the lock exclusively, with the option to downgrade to shared.
 
         Yields a callable that atomically converts the exclusive hold into a
