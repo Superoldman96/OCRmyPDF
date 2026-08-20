@@ -712,3 +712,51 @@ def test_hocr_roundtrip_with_string_plugin_and_deprecated_jbig2(resources, outdi
             plugins=NOOP_PLUGIN,
         )
     assert outpdf.exists()
+
+
+@pytest.mark.parametrize(
+    'use_options_object', [False, True], ids=['positional', 'options']
+)
+def test_api_lock_not_held_during_pipeline(
+    monkeypatch, resources, outpdf, use_options_object
+):
+    """The plugin-install lock must not cover option checking or the pipeline.
+
+    The lock exists to serialize plugin installation, which mutates interpreter
+    global state. Holding it any longer prevents concurrent jobs in one process.
+    """
+    observed = []
+    real_run_pipeline = ocrmypdf.api.run_pipeline
+    real_check_options = ocrmypdf.api.check_options
+
+    def spy_run_pipeline(*args, **kwargs):
+        observed.append(('run_pipeline', ocrmypdf.api._api_lock.locked()))
+        return real_run_pipeline(*args, **kwargs)
+
+    def spy_check_options(*args, **kwargs):
+        observed.append(('check_options', ocrmypdf.api._api_lock.locked()))
+        return real_check_options(*args, **kwargs)
+
+    monkeypatch.setattr(ocrmypdf.api, 'run_pipeline', spy_run_pipeline)
+    monkeypatch.setattr(ocrmypdf.api, 'check_options', spy_check_options)
+
+    if use_options_object:
+        ocrmypdf.ocr(
+            OcrOptions(
+                input_file=resources / 'trivial.pdf',
+                output_file=outpdf,
+                optimize=0,
+                progress_bar=False,
+            ),
+            plugins=[NOOP_PLUGIN],
+        )
+    else:
+        ocrmypdf.ocr(
+            resources / 'trivial.pdf',
+            outpdf,
+            optimize=0,
+            plugins=[NOOP_PLUGIN],
+            progress_bar=False,
+        )
+
+    assert observed == [('check_options', False), ('run_pipeline', False)]

@@ -111,10 +111,18 @@ Programs that call {func}`ocrmypdf.ocr()` should also install a SIGBUS signal
 handler (except on Windows), to raise an exception if access to a memory
 mapped file fails. OCRmyPDF may use memory mapping.
 
-{func}`ocrmypdf.ocr()` will take a threading lock to prevent multiple runs of itself
-in the same Python interpreter process. This is not thread-safe, because of how
-OCRmyPDF's plugins and Python's library import system work. If you need to parallelize
-OCRmyPDF, use processes.
+{func}`ocrmypdf.ocr()` takes a threading lock while it installs plugins, because of
+how OCRmyPDF's plugins and Python's library import system work. The lock is not held
+during the OCR pipeline, so several OCR jobs may run concurrently in the same Python
+interpreter process.
+
+Concurrent in-process jobs must all use the same plugin set and the same
+`max_image_mpixels`. Plugin registration and Pillow's decompression-bomb limit are
+interpreter-global, and the last job to set them wins. If you need to run jobs with
+differing configurations, use separate processes.
+
+Note that N concurrent jobs each configured with `jobs=M` may spawn up to N*M
+workers, so size `jobs` accordingly.
 
 :::{warning}
 On Windows and macOS, the script that calls {func}`ocrmypdf.ocr()` must be

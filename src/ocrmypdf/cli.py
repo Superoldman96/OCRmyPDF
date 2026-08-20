@@ -551,17 +551,15 @@ def get_options_and_plugins(
         Tuple of (OcrOptions, PluginManager)
     """
     # Import here to avoid circular imports
-    from ocrmypdf.api import setup_plugin_infrastructure
+    from ocrmypdf.api import _install_plugins
 
     # First pass: get plugins so we can register their options
     pre_options, _unused = plugins_only_parser.parse_known_args(args=args)
 
-    # Set up plugin infrastructure with proper initialization
-    plugin_manager = setup_plugin_infrastructure(plugins=pre_options.plugins)
-
-    # Get parser and let plugins add their options
+    # Install plugins and let them add their options. This mutates interpreter
+    # global state, so it runs under the same lock the public API uses.
     parser = get_parser()
-    plugin_manager.add_options(parser=parser)
+    plugin_manager = _install_plugins(pre_options.plugins, parser=parser)
 
     # Parse all arguments
     namespace = parser.parse_args(args=args)

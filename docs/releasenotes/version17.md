@@ -3,6 +3,29 @@
 
 # v17
 
+## v17.11.0
+
+- Several OCR jobs may now run concurrently in a single Python process. The
+  API previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a
+  second call in another thread had to wait for the first to finish. The lock
+  is now held only while plugins are installed - the step that actually mutates
+  interpreter-global state - and released before option validation and the OCR
+  pipeline run.
+- Removed the process-wide lock that serialized worker pools across all
+  `Executor` instances. `Executor.pool_lock` is retained but no longer acquired,
+  and is deprecated; it will be removed in a future major release. The invariant
+  it protected - that only one progress bar renders on the shared console - is
+  now enforced by the progress bar, which disables itself if another bar already
+  owns the console.
+- Note that N concurrent jobs each configured with `jobs=M` may now spawn up to
+  N*M workers, where previously they were serialized to M. Size `jobs`
+  accordingly.
+- Known limitations of concurrent in-process jobs: all concurrent jobs must use
+  the same plugin set and the same `max_image_mpixels`. Plugin registration and
+  Pillow's decompression-bomb limit are interpreter-global and the last job to
+  set them wins. Use separate processes to run jobs with differing
+  configurations.
+
 ## v17.10.0
 
 - The `watcher.py` watched-folder helper (the `watcher` extra) has been

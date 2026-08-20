@@ -20,9 +20,13 @@ Experimental Functions:
     _hocr_to_ocr_pdf(): Convert hOCR files back to a searchable PDF after
         manual text corrections.
 
-The API maintains thread safety through internal locking since OCRmyPDF uses
-global state for plugins. Only one OCR operation can run per Python process
-at a time. For parallel processing, use multiple Python processes.
+Installing plugins mutates interpreter-global state, so that step is serialized
+internally. Everything else - option validation and the OCR pipeline itself -
+runs unlocked, so several OCR jobs may proceed concurrently in one process.
+Concurrent jobs must use the same plugin set and the same
+``max_image_mpixels``: plugin registration and Pillow's decompression-bomb limit
+are interpreter-global, and the last job to set them wins. To run jobs with
+differing configurations, use separate Python processes.
 
 Example:
     import ocrmypdf
@@ -66,9 +70,10 @@ from ocrmypdf.exceptions import ExitCode
 StrPath = Path | str | bytes
 PathOrIO = BinaryIO | StrPath
 
-# Installing plugins affects the global state of the Python interpreter,
-# so we need to use a lock to prevent multiple threads from installing
-# plugins at the same time.
+# Installing plugins affects the global state of the Python interpreter, so we
+# need a lock to prevent multiple threads from installing plugins at the same
+# time. Acquired only by _install_plugins(), which documents the scope; nothing
+# else may take this lock, or concurrent OCR jobs would serialize.
 _api_lock = threading.Lock()
 
 
@@ -131,6 +136,41 @@ def setup_plugin_infrastructure(
     plugin_manager._option_registry = registry
 
     return plugin_manager
+
+
+def _install_plugins(
+    plugins: Sequence[Path | str],
+    plugin_manager: OcrmypdfPluginManager | None = None,
+    parser: ArgumentParser | None = None,
+) -> OcrmypdfPluginManager:
+    """Install plugins and let them register options, under the global API lock.
+
+    Installing a plugin mutates interpreter-global state: ``sys.modules`` for
+    plugins given as file paths, and the plugin option model registry that
+    :class:`ocrmypdf.OcrOptions` consults. The ``initialize`` and ``add_options``
+    hooks are also documented as being permitted to mutate global state. Those
+    steps are serialized here.
+
+    The lock deliberately covers nothing else. Option construction, option
+    validation and the pipeline run all execute unlocked, so that several OCR
+    jobs may proceed concurrently in one interpreter.
+
+    Args:
+        plugins: Plugin paths or names to install.
+        plugin_manager: An existing plugin manager, mutually exclusive with
+            ``plugins``.
+        parser: Parser to offer to ``add_options``. A throwaway parser is used
+            if none is given; plugins are still called either way, since the
+            hook is allowed to have side effects beyond the parser.
+    """
+    with _api_lock:
+        plugin_manager = setup_plugin_infrastructure(
+            plugins=plugins, plugin_manager=plugin_manager
+        )
+        plugin_manager.add_options(
+            parser=parser if parser is not None else get_parser()
+        )
+        return plugin_manager
 
 
 class Verbosity(IntEnum):
@@ -585,14 +625,20 @@ def ocr(  # noqa: D417
 
     For most arguments, see documentation for the equivalent command line parameter.
 
-    This API takes a threading lock, because OCRmyPDF uses global state in particular
-    for the plugin system. The jobs parameter will be used to create a pool of
-    worker threads or processes at different times, subject to change. A Python
-    process can only run one OCRmyPDF task at a time.
+    This API takes a threading lock while installing plugins, because OCRmyPDF uses
+    global state for the plugin system. The lock is not held during the OCR
+    pipeline, so several OCR jobs may run concurrently in one Python process.
+    The jobs parameter will be used to create a pool of worker threads or
+    processes at different times, subject to change; note that N concurrent jobs
+    each with ``jobs=M`` may spawn up to N*M workers.
 
-    To run parallelize instances OCRmyPDF, use separate Python processes to scale
-    horizontally. Generally speaking you should set jobs=sqrt(cpu_count) and run
-    sqrt(cpu_count) processes as a starting point. If you have files with a high page
+    Concurrent in-process jobs must use the same plugin set and the same
+    max_image_mpixels, since plugin registration and Pillow's decompression-bomb
+    limit are interpreter-global and the last job to set them wins. To run jobs
+    with differing configurations, or to scale beyond what the GIL allows, use
+    separate Python processes to scale horizontally. Generally speaking you
+    should set jobs=sqrt(cpu_count) and run sqrt(cpu_count) processes as a
+    starting point. If you have files with a high page
     count, run fewer processes and more jobs per process. If you have a lot of short
     files, run more processes and fewer jobs per process.
 
@@ -673,17 +719,11 @@ def ocr(  # noqa: D417
         else:
             plugins = list(plugins) if plugins else []
 
+        plugin_manager = _install_plugins(plugins, plugin_manager)
+
         # Run the pipeline with the OcrOptions
-        with _api_lock:
-            plugin_manager = setup_plugin_infrastructure(
-                plugins=plugins, plugin_manager=plugin_manager
-            )
-
-            parser = get_parser()
-            plugin_manager.add_options(parser=parser)
-
-            check_options(options, plugin_manager)
-            return run_pipeline(options=options, plugin_manager=plugin_manager)
+        check_options(options, plugin_manager)
+        return run_pipeline(options=options, plugin_manager=plugin_manager)
 
     else:
         # Old-style API: positional arguments
@@ -722,41 +762,30 @@ def ocr(  # noqa: D417
         create_options_kwargs.update(kwargs)
 
         parser = get_parser()
-        with _api_lock:
-            # Set up plugin infrastructure with proper initialization
-            plugin_manager = setup_plugin_infrastructure(
-                plugins=plugins, plugin_manager=plugin_manager
+        plugin_manager = _install_plugins(plugins, plugin_manager, parser=parser)
+
+        if 'verbose' in kwargs:
+            warn("ocrmypdf.ocr(verbose=) is ignored. Use ocrmypdf.configure_logging().")
+
+        # Warn about deprecated jbig2 options and remove from kwargs
+        if jbig2_lossy:
+            warn(
+                "jbig2_lossy is deprecated and will be ignored. "
+                "Lossy JBIG2 has been removed due to character substitution risks."
             )
+            create_options_kwargs.pop('jbig2_lossy', None)
+        if jbig2_page_group_size:
+            warn("jbig2_page_group_size is deprecated and will be ignored.")
+            create_options_kwargs.pop('jbig2_page_group_size', None)
 
-            # Get parser and let plugins add their options
-            parser = get_parser()
-            plugin_manager.add_options(parser=parser)
-
-            if 'verbose' in kwargs:
-                warn(
-                    "ocrmypdf.ocr(verbose=) is ignored. "
-                    "Use ocrmypdf.configure_logging()."
-                )
-
-            # Warn about deprecated jbig2 options and remove from kwargs
-            if jbig2_lossy:
-                warn(
-                    "jbig2_lossy is deprecated and will be ignored. "
-                    "Lossy JBIG2 has been removed due to character substitution risks."
-                )
-                create_options_kwargs.pop('jbig2_lossy', None)
-            if jbig2_page_group_size:
-                warn("jbig2_page_group_size is deprecated and will be ignored.")
-                create_options_kwargs.pop('jbig2_page_group_size', None)
-
-            options = create_options(
-                input_file=input_file,
-                output_file=output_file,
-                parser=parser,
-                **create_options_kwargs,
-            )
-            check_options(options, plugin_manager)
-            return run_pipeline(options=options, plugin_manager=plugin_manager)
+        options = create_options(
+            input_file=input_file,
+            output_file=output_file,
+            parser=parser,
+            **create_options_kwargs,
+        )
+        check_options(options, plugin_manager)
+        return run_pipeline(options=options, plugin_manager=plugin_manager)
 
 
 def _pdf_to_hocr(  # noqa: D417
@@ -876,26 +905,18 @@ def _pdf_to_hocr(  # noqa: D417
             continue
         extra_attrs[key] = options_kwargs.pop(key)
 
-    with _api_lock:
-        # Set up plugin infrastructure with proper initialization
-        plugin_manager = setup_plugin_infrastructure(
-            plugins=plugins, plugin_manager=plugin_manager
-        )
+    plugin_manager = _install_plugins(plugins, plugin_manager)
 
-        plugin_manager.add_options(parser=get_parser())
+    # Create OcrOptions directly
+    try:
+        options = OcrOptions(**options_kwargs)
+        # Add any extra attributes
+        if extra_attrs:
+            options.extra_attrs.update(extra_attrs)
+    except Exception as e:
+        raise TypeError(f"Failed to create OcrOptions for hOCR pipeline: {e}") from e
 
-        # Create OcrOptions directly
-        try:
-            options = OcrOptions(**options_kwargs)
-            # Add any extra attributes
-            if extra_attrs:
-                options.extra_attrs.update(extra_attrs)
-        except Exception as e:
-            raise TypeError(
-                f"Failed to create OcrOptions for hOCR pipeline: {e}"
-            ) from e
-
-        return run_hocr_pipeline(options=options, plugin_manager=plugin_manager)
+    return run_hocr_pipeline(options=options, plugin_manager=plugin_manager)
 
 
 def _hocr_to_ocr_pdf(  # noqa: D417
@@ -992,28 +1013,20 @@ def _hocr_to_ocr_pdf(  # noqa: D417
             continue
         extra_attrs[key] = options_kwargs.pop(key)
 
-    with _api_lock:
-        # Set up plugin infrastructure with proper initialization
-        plugin_manager = setup_plugin_infrastructure(
-            plugins=plugins, plugin_manager=plugin_manager
-        )
+    plugin_manager = _install_plugins(plugins, plugin_manager)
 
-        plugin_manager.add_options(parser=get_parser())
+    # Create OcrOptions directly
+    try:
+        options = OcrOptions(**options_kwargs)
+        # Add any extra attributes
+        if extra_attrs:
+            options.extra_attrs.update(extra_attrs)
+    except Exception as e:
+        raise TypeError(
+            f"Failed to create OcrOptions for hOCR to PDF pipeline: {e}"
+        ) from e
 
-        # Create OcrOptions directly
-        try:
-            options = OcrOptions(**options_kwargs)
-            # Add any extra attributes
-            if extra_attrs:
-                options.extra_attrs.update(extra_attrs)
-        except Exception as e:
-            raise TypeError(
-                f"Failed to create OcrOptions for hOCR to PDF pipeline: {e}"
-            ) from e
-
-        return run_hocr_to_ocr_pdf_pipeline(
-            options=options, plugin_manager=plugin_manager
-        )
+    return run_hocr_to_ocr_pdf_pipeline(options=options, plugin_manager=plugin_manager)
 
 
 __all__ = [
