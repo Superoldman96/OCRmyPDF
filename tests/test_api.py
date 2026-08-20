@@ -717,24 +717,29 @@ def test_hocr_roundtrip_with_string_plugin_and_deprecated_jbig2(resources, outdi
 @pytest.mark.parametrize(
     'use_options_object', [False, True], ids=['positional', 'options']
 )
-def test_api_lock_not_held_during_pipeline(
+def test_plugin_lock_not_held_exclusively_during_pipeline(
     monkeypatch, resources, outpdf, use_options_object
 ):
-    """The plugin-install lock must not cover option checking or the pipeline.
+    """Option checking and the pipeline must run without exclusive access.
 
-    The lock exists to serialize plugin installation, which mutates interpreter
-    global state. Holding it any longer prevents concurrent jobs in one process.
+    The lock is taken exclusively only to install plugins, which mutates
+    interpreter-global state. A job holds it shared for its run, so concurrent
+    jobs overlap; holding it exclusively any longer would serialize them.
     """
     observed = []
     real_run_pipeline = ocrmypdf.api.run_pipeline
     real_check_options = ocrmypdf.api.check_options
 
+    def _held_exclusively():
+        # pylint: disable=protected-access
+        return ocrmypdf.api.plugin_lock._writer
+
     def spy_run_pipeline(*args, **kwargs):
-        observed.append(('run_pipeline', ocrmypdf.api._api_lock.locked()))
+        observed.append(('run_pipeline', _held_exclusively()))
         return real_run_pipeline(*args, **kwargs)
 
     def spy_check_options(*args, **kwargs):
-        observed.append(('check_options', ocrmypdf.api._api_lock.locked()))
+        observed.append(('check_options', _held_exclusively()))
         return real_check_options(*args, **kwargs)
 
     monkeypatch.setattr(ocrmypdf.api, 'run_pipeline', spy_run_pipeline)

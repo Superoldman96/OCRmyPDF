@@ -5,12 +5,22 @@
 
 ## v17.11.0
 
-- Several OCR jobs may now run concurrently in a single Python process. The
-  API previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a
-  second call in another thread had to wait for the first to finish. The lock
-  is now held only while plugins are installed - the step that actually mutates
-  interpreter-global state - and released before option validation and the OCR
-  pipeline run.
+- Several OCR jobs may now run concurrently in a single Python process. The API
+  previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a second
+  call in another thread had to wait for the first to finish. Plugin state is
+  now guarded by a readers-writer lock: installing a plugin set takes it
+  exclusively, and a job holds it shared for its run. An in-flight job therefore
+  cannot have the plugin infrastructure it depends on replaced underneath it,
+  while jobs that are past installation proceed concurrently.
+- A plugin set is now installed once per interpreter and reused, rather than
+  being reinstalled on every call. Previously each `ocrmypdf.ocr()` call
+  re-executed plugin modules given as file paths and rebound them in
+  `sys.modules`. Plugins must not rely on being re-executed for each job, and
+  must not store per-job state on the plugin manager, which concurrent jobs
+  requesting the same plugin set now share.
+- Jobs requesting different plugin sets serialize against each other, since
+  installing the second set must wait for the first set's jobs to finish. Use
+  the same plugin set across concurrent jobs, or separate processes.
 - Removed the process-wide lock that serialized worker pools across all
   `Executor` instances. `Executor.pool_lock` is retained but no longer acquired,
   and is deprecated; it will be removed in a future major release. The invariant
@@ -20,11 +30,10 @@
 - Note that N concurrent jobs each configured with `jobs=M` may now spawn up to
   N*M workers, where previously they were serialized to M. Size `jobs`
   accordingly.
-- Known limitations of concurrent in-process jobs: all concurrent jobs must use
-  the same plugin set and the same `max_image_mpixels`. Plugin registration and
-  Pillow's decompression-bomb limit are interpreter-global and the last job to
-  set them wins. Use separate processes to run jobs with differing
-  configurations.
+- Known limitation of concurrent in-process jobs: they must use the same
+  `max_image_mpixels`. Pillow's decompression-bomb limit is interpreter-global
+  and the last job to set it wins. Use separate processes to run jobs with
+  differing configurations.
 
 ## v17.10.0
 

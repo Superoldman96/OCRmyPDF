@@ -6,6 +6,7 @@ from __future__ import annotations
 import itertools
 import os
 import platform
+import sys
 import threading
 
 import pikepdf
@@ -157,3 +158,92 @@ def test_two_api_jobs_produce_valid_output(resources, tmp_path):
     for output in outputs:
         with pikepdf.open(output) as pdf:
             assert len(pdf.pages) >= 1
+
+
+def test_same_plugin_set_is_installed_once_per_interpreter(resources, tmp_path):
+    """Repeat jobs must reuse the installed plugin set, not re-execute it."""
+
+    def run(name):
+        ocrmypdf.ocr(
+            resources / 'trivial.pdf',
+            tmp_path / name,
+            optimize=0,
+            plugins=[NOOP_PLUGIN],
+            progress_bar=False,
+        )
+
+    run('once.pdf')
+    first = sys.modules['tesseract_noop']
+    run('twice.pdf')
+    assert sys.modules['tesseract_noop'] is first
+
+
+def test_installing_a_different_plugin_set_waits_for_in_flight_jobs(
+    monkeypatch, resources, tmp_path
+):
+    """A job cannot have the plugin infrastructure replaced underneath it.
+
+    Installing a plugin set that is not already installed must wait for every
+    in-flight job to finish.
+    """
+    # Spelled differently, so it is a distinct plugin set as far as the install
+    # cache is concerned, while behaving identically for OCR purposes.
+    other_plugin = './' + NOOP_PLUGIN
+
+    def run(plugin, name):
+        ocrmypdf.ocr(
+            resources / 'trivial.pdf',
+            tmp_path / name,
+            optimize=0,
+            plugins=[plugin],
+            progress_bar=False,
+        )
+
+    # Install both sets up front, so the blocking below is attributable to the
+    # lock rather than to first-time installation cost.
+    run(NOOP_PLUGIN, 'warm_a.pdf')
+    run(other_plugin, 'warm_b.pdf')
+    ocrmypdf.api._installed_plugins.pop(
+        ocrmypdf.api._plugin_cache_key([other_plugin]), None
+    )
+
+    first_running = threading.Event()
+    release_first = threading.Event()
+    second_installed = threading.Event()
+
+    real_run_pipeline = ocrmypdf.api.run_pipeline
+    real_setup = ocrmypdf.api.setup_plugin_infrastructure
+    holding = threading.Event()
+
+    def spy_run_pipeline(*args, **kwargs):
+        if not holding.is_set():
+            holding.set()
+            first_running.set()
+            release_first.wait(timeout=30)
+        return real_run_pipeline(*args, **kwargs)
+
+    def spy_setup(*args, **kwargs):
+        result = real_setup(*args, **kwargs)
+        second_installed.set()
+        return result
+
+    monkeypatch.setattr(ocrmypdf.api, 'run_pipeline', spy_run_pipeline)
+    monkeypatch.setattr(ocrmypdf.api, 'setup_plugin_infrastructure', spy_setup)
+
+    first = threading.Thread(target=run, args=(NOOP_PLUGIN, 'first.pdf'))
+    first.start()
+    try:
+        assert first_running.wait(timeout=30), "first job never started"
+        second = threading.Thread(target=run, args=(other_plugin, 'second.pdf'))
+        second.start()
+        # The second job needs to install a plugin set that is not present, so
+        # it must not proceed while the first job is still running.
+        assert not second_installed.wait(timeout=2)
+    finally:
+        release_first.set()
+        first.join(timeout=60)
+        second.join(timeout=60)
+
+    assert second_installed.is_set()
+    assert (tmp_path / 'first.pdf').exists()
+    assert (tmp_path / 'second.pdf').exists()

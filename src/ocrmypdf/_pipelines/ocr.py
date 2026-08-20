@@ -42,7 +42,7 @@ from ocrmypdf._pipelines._common import (
     setup_pipeline,
     worker_init,
 )
-from ocrmypdf._plugin_manager import OcrmypdfPluginManager
+from ocrmypdf._plugin_manager import OcrmypdfPluginManager, plugin_lock
 from ocrmypdf._progressbar import ProgressBar
 from ocrmypdf._validation import (
     check_requested_output_file,
@@ -166,6 +166,11 @@ def _run_pipeline(
     plugin_manager: OcrmypdfPluginManager,
 ) -> ExitCode:
     with (
+        # Hold the plugin lock shared for the whole run. Plugin installation
+        # takes it exclusively, so this keeps the plugin infrastructure this job
+        # reads from being replaced underneath it. Reentrant: callers that
+        # entered through the public API already hold it.
+        plugin_lock.shared(),
         manage_work_folder(
             work_folder=Path(mkdtemp(prefix="ocrmypdf.io.")),
             retain=options.keep_temporary_files,
