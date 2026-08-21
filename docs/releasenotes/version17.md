@@ -55,6 +55,17 @@
   `max_image_mpixels`. Pillow's decompression-bomb limit is interpreter-global
   and the last job to set it wins. Use separate processes to run jobs with
   differing configurations.
+- Windows: OCRmyPDF no longer prints `[WinError 2] The system cannot find the
+  file specified` warnings while it searches for Ghostscript and Tesseract
+  ([#1671](https://github.com/ocrmypdf/OCRmyPDF/discussions/1671)). These
+  messages came from probing registry keys that simply don't exist when the
+  programs were installed by a package manager such as Scoop, or not installed
+  at all. Since the search then continues elsewhere and usually succeeds, these
+  failures are normal, and are now logged at debug level, naming the location
+  that was searched. If a program genuinely cannot be found, OCRmyPDF still
+  reports that as an error.
+- Windows: fixed a crash when the `PROGRAMFILES` environment variable pointed to
+  a folder that does not exist.
 
 ## v17.10.0
 

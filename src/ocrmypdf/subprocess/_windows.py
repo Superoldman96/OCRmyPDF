@@ -69,34 +69,46 @@ def registry_values(key: HKEYType) -> Iterator[tuple[str, Any, int]]:
     return registry_enum(key, winreg.EnumValue)
 
 
+def _log_search_failure(what: str, where: str, e: OSError) -> None:
+    """Explain a failed search for a program.
+
+    Searching for programs in various places is speculative: most of the
+    locations we check will not exist on any given machine, and finding the
+    program in one of them means we never look at the rest. A failure here is
+    only interesting when debugging why a program could not be found at all,
+    so it must not be reported to the user as a warning. If every search
+    fails, the caller reports a proper error naming the missing program.
+    """
+    log.debug("Did not find %s in %s: %s", what, where, e)
+
+
 def registry_path_ghostscript(env=None) -> Iterator[Path]:
     del env  # unused (but needed for protocol)
+    key = r"SOFTWARE\Artifex\GPL Ghostscript"
     try:
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Artifex\GPL Ghostscript"
-        ) as k:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
             latest_gs = max(
                 registry_subkeys(k), key=ghostscript_version_key, default=(0, 0, 0)
             )
-        with winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Artifex\GPL Ghostscript\{latest_gs}"
-        ) as k:
+        key = rf"SOFTWARE\Artifex\GPL Ghostscript\{latest_gs}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
             for _, gs_path, _ in registry_values(k):
                 yield Path(gs_path) / 'bin'
     except OSError as e:
-        log.warning(e)
+        _log_search_failure("Ghostscript", rf"registry key HKLM\{key}", e)
 
 
 def registry_path_tesseract(env=None) -> Iterator[Path]:
     del env  # unused (but needed for protocol)
+    key = r"SOFTWARE\Tesseract-OCR"
     try:
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Tesseract-OCR") as k:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
             for subkey, val, _valtype in registry_values(k):
                 if subkey == 'InstallDir':
                     tesseract_path = Path(val)
                     yield tesseract_path
     except OSError as e:
-        log.warning(e)
+        _log_search_failure("Tesseract", rf"registry key HKLM\{key}", e)
 
 
 def _gs_version_in_path_key(path: Path) -> tuple[str, Version | None]:
@@ -129,7 +141,16 @@ def program_files_paths(env=None) -> Iterator[Path]:
     program_files = env.get('PROGRAMFILES', '')
 
     def path_walker() -> Iterator[Path]:
-        for path in Path(program_files).iterdir():
+        try:
+            entries = list(Path(program_files).iterdir())
+        except OSError as e:
+            _log_search_failure(
+                "Ghostscript or Tesseract",
+                f"Program Files folder {program_files!r}",
+                e,
+            )
+            return
+        for path in entries:
             if not path.is_dir():
                 continue
             if path.name.lower() == 'tesseract-ocr':
