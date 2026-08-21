@@ -12,8 +12,9 @@ import threading
 from collections.abc import Callable, Iterator, MutableSet, Sequence
 from os import fspath
 from pathlib import Path
+from struct import pack as struct_pack
 from typing import Any, NamedTuple, NewType, cast
-from zlib import compress
+from zlib import compress, crc32
 
 import img2pdf
 from pikepdf import (
@@ -190,6 +191,98 @@ def extract_image_jbig2(
     return None
 
 
+# PNG colour types, and the component count each implies, for the PDF
+# colorspaces that map onto them directly. PNG has no notion of calibration, and
+# neither does the Pillow path we are replacing, so /CalRGB and /CalGray are
+# treated as their device equivalents.
+_PNG_COLOR_TYPE_GRAY = 0
+_PNG_COLOR_TYPE_RGB = 2
+_PNG_COLOR_TYPES: dict[str, tuple[int, int]] = {
+    '/DeviceGray': (_PNG_COLOR_TYPE_GRAY, 1),
+    '/CalGray': (_PNG_COLOR_TYPE_GRAY, 1),
+    '/DeviceRGB': (_PNG_COLOR_TYPE_RGB, 3),
+    '/CalRGB': (_PNG_COLOR_TYPE_RGB, 3),
+}
+
+# Bit depths each PNG colour type permits. Greyscale accepts sub-byte depths;
+# truecolour does not.
+_PNG_BIT_DEPTHS: dict[int, frozenset[int]] = {
+    _PNG_COLOR_TYPE_GRAY: frozenset({1, 2, 4, 8, 16}),
+    _PNG_COLOR_TYPE_RGB: frozenset({8, 16}),
+}
+
+
+def _png_chunk(tag: bytes, data: bytes) -> bytes:
+    """Frame one PNG chunk: length, type, payload, CRC of type and payload."""
+    return (
+        struct_pack('>I', len(data)) + tag + data + struct_pack('>I', crc32(tag + data))
+    )
+
+
+def png_from_flate_predictor(pim: PdfImage, image: Stream) -> bytes | None:
+    """Repackage a Flate-compressed image as PNG without recoding the pixels.
+
+    PDF predictors 10 to 15 are the PNG filtering algorithm, so an image stored
+    as ``/FlateDecode`` with one of them already holds precisely what a PNG
+    ``IDAT`` chunk holds: zlib-compressed scanlines, each prefixed by its filter
+    type byte. Such an image becomes a PNG by wrapping the stream in a header
+    and trailer, skipping the inflate, unfilter, refilter and deflate that
+    decoding to a Pillow image and saving it would perform. On a large image
+    that round trip costs seconds.
+
+    Returns None if the image is not in a directly repackageable form, in which
+    case the caller must fall back to decoding it.
+    """
+    if len(pim.filter_decodeparms) != 1:
+        return None  # Cascaded filters: the Flate layer is not the pixel data
+    filter_, decode_parms = pim.filter_decodeparms[0]
+    if filter_ != Name.FlateDecode or not decode_parms:
+        return None
+    if pikepdf_get_int(decode_parms, Name.Predictor, 1) < 10:
+        return None  # Not PNG-filtered, so scanlines lack a filter type byte
+
+    colorspace = pim.colorspace
+    if colorspace is None:
+        return None
+    try:
+        color_type, colors = _PNG_COLOR_TYPES[colorspace]
+    except KeyError:
+        return None
+
+    bit_depth = pim.bits_per_component
+    if bit_depth not in _PNG_BIT_DEPTHS[color_type]:
+        return None
+
+    # The predictor was applied to the layout these parameters describe. If they
+    # disagree with the image itself, the stream is not the image's scanlines.
+    if (
+        pikepdf_get_int(decode_parms, Name.Colors, 1) != colors
+        or pikepdf_get_int(decode_parms, Name.BitsPerComponent, 8) != bit_depth
+        or pikepdf_get_int(decode_parms, Name.Columns, 1) != pim.width
+    ):
+        return None
+
+    if Name.Decode in image:
+        return None  # Remapped sample values; PNG has no equivalent
+
+    header = struct_pack(
+        '>IIBBBBB',
+        pim.width,
+        pim.height,
+        bit_depth,
+        color_type,
+        0,  # compression method: deflate, the only one PNG defines
+        0,  # filter method: adaptive, which is what the PDF predictor applied
+        0,  # interlace method: none
+    )
+    return (
+        b'\x89PNG\r\n\x1a\n'
+        + _png_chunk(b'IHDR', header)
+        + _png_chunk(b'IDAT', bytes(image.read_raw_bytes()))
+        + _png_chunk(b'IEND', b'')
+    )
+
+
 def _should_optimize_jpeg(options, filtdp):
     if options.optimize >= 2:
         return True
@@ -235,8 +328,10 @@ def extract_image_generic(
         pim.as_pil_image().save(png_name(root, xref))
         return XrefExt(xref, '.png')
     elif not pim.indexed and pim.colorspace in pim.SIMPLE_COLORSPACES:
-        # An optimization opportunity here, not currently taken, is directly
-        # generating a PNG from compressed data
+        png = png_from_flate_predictor(pim, image)
+        if png is not None:
+            png_name(root, xref).write_bytes(png)
+            return XrefExt(xref, '.png')
         try:
             pim.as_pil_image().save(png_name(root, xref))
         except NotImplementedError:

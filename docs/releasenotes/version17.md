@@ -21,6 +21,14 @@
 - Jobs requesting different plugin sets serialize against each other, since
   installing the second set must wait for the first set's jobs to finish. Use
   the same plugin set across concurrent jobs, or separate processes.
+- Image optimization is substantially faster on documents with large images.
+  An image stored as `/FlateDecode` with a PNG predictor already holds exactly
+  what a PNG `IDAT` chunk holds, so it is now repackaged as a PNG directly
+  instead of being decoded to a bitmap and re-encoded. On a 6-page document
+  containing one 9000x9000 image, the optimization step went from 3.4s to 0.6s
+  and total runtime from 10.0s to 7.2s. Output is unchanged: the compressed
+  data is reused verbatim. Images that are not in a directly repackageable form
+  still take the previous path.
 - Removed the process-wide lock that serialized worker pools across all
   `Executor` instances. `Executor.pool_lock` is retained but no longer acquired,
   and is deprecated; it will be removed in a future major release. The invariant

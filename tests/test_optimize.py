@@ -681,3 +681,141 @@ class TestOptimizePdfMessages:
 def test_is_optimization_enabled(level, enabled):
     context = SimpleNamespace(options=_plugin_opts('--optimize', str(level)))
     assert optimize_plugin.is_optimization_enabled(context) is enabled
+
+
+def _first_flate_predictor_image(pdf: pikepdf.Pdf):
+    """Return the first image stored as FlateDecode with a PNG predictor."""
+    for page in pdf.pages:
+        for _name, image in page.get_images().items():
+            decode_parms = image.get(Name.DecodeParms)
+            if (
+                image.get(Name.Filter) == Name.FlateDecode
+                and decode_parms is not None
+                and int(decode_parms.get(Name.Predictor, 1)) >= 10
+            ):
+                return image
+    raise AssertionError("no Flate/PNG-predictor image in this PDF")
+
+
+@pytest.mark.parametrize(
+    ('filename', 'colorspace'),
+    [('graph.pdf', Name.DeviceRGB), ('3small.pdf', Name.DeviceGray)],
+)
+def test_png_repackaging_matches_pillow(resources, filename, colorspace):
+    """Repackaging must produce the same pixels as decoding with Pillow."""
+    with pikepdf.open(resources / filename) as pdf:
+        image = _first_flate_predictor_image(pdf)
+        assert image.get(Name.ColorSpace) == colorspace
+        pdf_image = PdfImage(image)
+
+        png = opt.png_from_flate_predictor(pdf_image, image)
+        assert png is not None, "image should be repackageable"
+        assert png.startswith(b'\x89PNG\r\n\x1a\n')
+
+        repackaged = Image.open(BytesIO(png))
+        expected = pdf_image.as_pil_image()
+        assert repackaged.size == expected.size
+        assert repackaged.convert('RGB').tobytes() == expected.convert('RGB').tobytes()
+
+
+def test_png_repackaging_reuses_the_stream_verbatim(resources):
+    """The point of repackaging is that the compressed data is not touched."""
+    with pikepdf.open(resources / 'graph.pdf') as pdf:
+        image = _first_flate_predictor_image(pdf)
+        png = opt.png_from_flate_predictor(PdfImage(image), image)
+        assert png is not None
+        assert bytes(image.read_raw_bytes()) in png
+
+
+def _synthetic_image(**overrides):
+    """Build a minimal Flate/PNG-predictor image dictionary."""
+    image = Dictionary()
+    image.Subtype = Name.Image
+    image.Width = 8
+    image.Height = 8
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceRGB
+    image.Filter = Name.FlateDecode
+    image.DecodeParms = Dictionary(
+        Predictor=15, Colors=3, BitsPerComponent=8, Columns=8
+    )
+    for key, value in overrides.items():
+        if value is None:
+            del image[f'/{key}']
+        else:
+            image[f'/{key}'] = value
+    return image
+
+
+@pytest.mark.parametrize(
+    ('description', 'overrides'),
+    [
+        ('no predictor', dict(DecodeParms=Dictionary(Predictor=1, Colors=3))),
+        ('no decode parms', dict(DecodeParms=None)),
+        ('cascaded filters', dict(Filter=Array([Name.FlateDecode, Name.DCTDecode]))),
+        ('unsupported filter', dict(Filter=Name.DCTDecode)),
+        ('unsupported colorspace', dict(ColorSpace=Name.DeviceCMYK)),
+        (
+            'truecolor below 8 bits per component',
+            dict(
+                BitsPerComponent=4,
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=4, Columns=8
+                ),
+            ),
+        ),
+        (
+            'colors disagree with colorspace',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=1, BitsPerComponent=8, Columns=8
+                )
+            ),
+        ),
+        (
+            'columns disagree with width',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=8, Columns=16
+                )
+            ),
+        ),
+        (
+            'bits per component disagree',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=4, Columns=8
+                )
+            ),
+        ),
+        ('decode array', dict(Decode=Array([1, 0, 1, 0, 1, 0]))),
+    ],
+)
+def test_png_repackaging_declines(description, overrides):
+    """Anything not directly repackageable must fall back to Pillow."""
+    image = _synthetic_image(**overrides)
+    assert opt.png_from_flate_predictor(PdfImage(image), image) is None, description
+
+
+def test_optimize_output_unchanged_by_png_repackaging(resources, outdir, monkeypatch):
+    """Repackaging must not change what optimization produces."""
+
+    def optimized(use_repackaging: bool) -> list[bytes]:
+        if not use_repackaging:
+            monkeypatch.setattr(
+                opt, 'png_from_flate_predictor', lambda *args, **kwargs: None
+            )
+        out = outdir / f'{use_repackaging}.pdf'
+        opt.main(fspath(resources / 'graph.pdf'), fspath(out), '1')
+        with pikepdf.open(out) as pdf:
+            return [
+                PdfImage(image).as_pil_image().convert('RGB').tobytes()
+                for page in pdf.pages
+                for _name, image in page.get_images().items()
+            ]
+
+    with monkeypatch.context():
+        via_pillow = optimized(False)
+    via_repackaging = optimized(True)
+
+    assert via_repackaging == via_pillow
