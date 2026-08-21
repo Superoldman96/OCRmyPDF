@@ -23,6 +23,7 @@ from ocrmypdf import optimize as opt
 from ocrmypdf._exec import ghostscript, jbig2enc, pngquant
 from ocrmypdf._exec.ghostscript import GS_GENERATED_PDFA, rasterize_pdf
 from ocrmypdf._options import OcrOptions
+from ocrmypdf._pipeline import get_pdf_save_settings
 from ocrmypdf.builtin_plugins import optimize as optimize_plugin
 from ocrmypdf.builtin_plugins.optimize import OptimizeOptions
 from ocrmypdf.cli import get_options_and_plugins
@@ -956,3 +957,91 @@ def test_uncompressed_image_is_skipped_quietly(tmp_path, caplog):
 
     assert results == []
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+def _pdf_with_image(payload: bytes, filter_name, width=64, height=64):
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, payload)
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    if filter_name is not None:
+        image.Filter = filter_name
+    page = pdf.add_blank_page(page_size=(width, height))
+    page.Resources = Dictionary(XObject=Dictionary(Im0=image))
+    return pdf
+
+
+def _saved_filter(pdf, **save_settings):
+    buf = BytesIO()
+    pdf.save(buf, **save_settings)
+    with pikepdf.open(buf) as saved:
+        return saved.pages[0].Resources.XObject.Im0.get(Name.Filter)
+
+
+_SAMPLES = bytes(range(256)) * 16
+
+
+def _run_length_encode(data: bytes) -> bytes:
+    """PDF RunLengthDecode, literal runs only."""
+    out = bytearray()
+    for i in range(0, len(data), 128):
+        chunk = data[i : i + 128]
+        out.append(len(chunk) - 1)
+        out += chunk
+    out.append(128)  # EOD
+    return bytes(out)
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_compresses_an_uncompressed_image(output_type):
+    """The optimizer declines uncompressed images because saving handles them.
+
+    extract_image_filter() returns None for an image with no /Filter. That is
+    only the right call because pdf.save(compress_streams=True) Flate-encodes
+    such a stream.
+    """
+    pdf = _pdf_with_image(_SAMPLES, None)
+    assert extract_image_filter(pdf.pages[0].Resources.XObject.Im0, 1) is None
+    assert _saved_filter(pdf, **get_pdf_save_settings(output_type)) == Name.FlateDecode
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_re_encodes_a_general_purpose_filter_as_flate(output_type):
+    """Saving modernizes qpdf's "generalized" filters, so the optimizer need not.
+
+    /ASCIIHexDecode stands in for that class, which also includes /LZWDecode.
+    """
+    payload = _SAMPLES.hex().encode() + b'>'
+    pdf = _pdf_with_image(payload, Name.ASCIIHexDecode)
+    assert _saved_filter(pdf, **get_pdf_save_settings(output_type)) == Name.FlateDecode
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_does_not_modernize_run_length_encoding(output_type):
+    """Qpdf treats /RunLengthDecode as an image filter, not a general one.
+
+    Unlike /LZWDecode and /ASCIIHexDecode it survives a save at the decode
+    levels OCRmyPDF uses, so it is the one obsolete encoding that saving does
+    not take care of. Recorded so a change in qpdf is noticed rather than
+    silently widening what saving covers.
+    """
+    payload = _run_length_encode(_SAMPLES)
+    assert (
+        _saved_filter(
+            _pdf_with_image(payload, Name.RunLengthDecode),
+            **get_pdf_save_settings(output_type),
+        )
+        == Name.RunLengthDecode
+    )
+    # It would be converted if OCRmyPDF asked for a deeper decode level.
+    assert (
+        _saved_filter(
+            _pdf_with_image(payload, Name.RunLengthDecode),
+            compress_streams=True,
+            stream_decode_level=pikepdf.StreamDecodeLevel.specialized,
+        )
+        == Name.FlateDecode
+    )

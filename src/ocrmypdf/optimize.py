@@ -1,7 +1,27 @@
 # SPDX-FileCopyrightText: 2022 James R. Barlow
 # SPDX-License-Identifier: MPL-2.0
 
-"""Post-processing image optimization of OCR PDFs."""
+"""Post-processing image optimization of OCR PDFs.
+
+This module concerns itself only with recoding image data in ways that a PDF
+writer will not do on its own: quantizing PNGs, re-encoding JPEGs, and
+converting bitonal images to JBIG2. Plain stream compression is deliberately
+left to :meth:`pikepdf.Pdf.save`, which OCRmyPDF always calls with
+``compress_streams=True``. Verified against pikepdf 10.11 / qpdf 12.3, saving
+that way will:
+
+- Flate-compress a stream that has no ``/Filter`` at all.
+- Re-encode ``/LZWDecode`` and ``/ASCIIHexDecode`` as ``/FlateDecode``.
+
+The exception is ``/RunLengthDecode``, which qpdf treats as an image filter
+rather than a general-purpose one and leaves alone at the decode levels
+OCRmyPDF uses (the default, and ``generalized`` for PDF/A-1). It would be
+converted at ``StreamDecodeLevel.specialized`` or above.
+
+This matters when driving this module directly rather than through the OCR
+pipeline - see :func:`main` - because the saving step is what performs that
+part of the optimization.
+"""
 
 from __future__ import annotations
 
@@ -92,9 +112,9 @@ def extract_image_filter(
     pim = PdfImage(image)
 
     if not pim.filter_decodeparms:
-        # An uncompressed image. There is no filter to reason about, and nothing
-        # downstream knows how to improve one, so leave it alone rather than
-        # letting the lookup below raise.
+        # An uncompressed image. There is no filter to reason about, and no need
+        # to build one: saving the PDF with compress_streams=True Flate-encodes
+        # any stream that lacks a filter. See the module docstring.
         log.debug(f"xref {xref}: skipping image with no compression filter")
         return None
 
@@ -801,7 +821,12 @@ def optimize(
     save_settings: dict[str, Any],
     executor: Executor = DEFAULT_EXECUTOR,
 ) -> Path:
-    """Optimize images in a PDF file."""
+    """Optimize images in a PDF file.
+
+    Recodes image data only. Ordinary stream compression is left to the
+    ``pdf.save(**save_settings)`` call at the end of this function, which the
+    module docstring describes.
+    """
     options = context.options
     if options.optimize == 0:
         safe_symlink(input_file, output_file)
