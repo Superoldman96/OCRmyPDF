@@ -5,6 +5,8 @@
 
 ## v17.11.0
 
+**Enhancements**
+
 - `watcher.py` (the `watcher` extra) gained a configurable output layout and
   conflict policy. These are watcher-only changes; they do not affect the
   `ocrmypdf` library API.
@@ -36,6 +38,9 @@
     - See the "Watched folders with watcher.py" section of the batch
       processing documentation for the full description, including a note
       for SMB users about client-side directory/file-info caching delays.
+
+**Performance**
+
 - Several OCR jobs may now run concurrently in a single Python process. The API
   previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a second
   call in another thread had to wait for the first to finish. Plugin state is
@@ -86,6 +91,9 @@
   `max_image_mpixels`. Pillow's decompression-bomb limit is interpreter-global
   and the last job to set it wins. Use separate processes to run jobs with
   differing configurations.
+
+**Fixes**
+
 - Windows: OCRmyPDF no longer prints `[WinError 2] The system cannot find the
   file specified` warnings while it searches for Ghostscript and Tesseract
   ([#1671](https://github.com/ocrmypdf/OCRmyPDF/discussions/1671)). These
@@ -97,6 +105,16 @@
   reports that as an error.
 - Windows: fixed a crash when the `PROGRAMFILES` environment variable pointed to
   a folder that does not exist.
+- `--mode strip` failed to remove OCR text layers that OCRmyPDF itself
+  produced ({issue}`1730`). OCRmyPDF grafts its text layer as a Form XObject
+  and stripping only examined the page content stream, so the invisible text
+  was never found. The same flaw made `--mode redo` stack a second text layer
+  on top of the old one instead of replacing it. Stripping now descends into
+  Form XObjects. Thanks @Anai-Guo ({issue}`1732`).
+- Stripping now also resolves page `/Resources` inherited from an ancestor
+  `/Pages` node, rather than only looking at the page's own resources.
+- A text layer that becomes empty after stripping is now removed from the page
+  instead of being left behind as a vestigial Form XObject husk.
 
 ## v17.10.0
 

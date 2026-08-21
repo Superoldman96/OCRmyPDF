@@ -176,14 +176,109 @@ def _ensure_dictionary(obj: Dictionary | Stream, name: Name):
     return obj[name]
 
 
-def strip_invisible_text(pdf: Pdf, page: Page):
+# Operators that actually mark the page. Everything else only manipulates the
+# graphics or text state, so a content stream containing none of these draws
+# nothing. 'INLINE IMAGE' is pikepdf's pseudo-operator for a BI...ID...EI block.
+_PAINTING_OPERATORS = frozenset(
+    Operator(op)
+    for op in (
+        'Tj',
+        'TJ',
+        "'",
+        '"',
+        'S',
+        's',
+        'f',
+        'F',
+        'f*',
+        'B',
+        'B*',
+        'b',
+        'b*',
+        'sh',
+        'Do',
+        'EI',
+        'INLINE IMAGE',
+    )
+)
+
+
+def _page_resources(page: Page) -> Object:
+    """Return the page's /Resources, resolving inheritance from /Pages nodes."""
+    node = page.obj
+    seen: set[tuple[int, int]] = set()
+    while isinstance(node, Dictionary):
+        resources = node.get(Name.Resources)
+        if isinstance(resources, Dictionary):
+            return resources
+        parent = node.get(Name.Parent)
+        if not isinstance(parent, Dictionary):
+            break
+        key = (parent.objgen[0], parent.objgen[1])
+        if key in seen:
+            break  # cycle, or a chain of direct objects we cannot tell apart
+        seen.add(key)
+        node = parent
+    return Dictionary()
+
+
+def _strip_invisible_text_from_form_xobjects(
+    pdf: Pdf,
+    resources: Object,
+    name: Object,
+    inherited_render_mode: int,
+    visited: dict[tuple[int, int], bool],
+) -> bool:
+    """Recurse into the Form XObject drawn by ``name Do`` and strip it too.
+
+    Returns True if the form paints nothing once stripped, meaning the caller
+    should stop drawing it.
+    """
+    try:
+        xobj = resources[Name.XObject][cast('Name', name)]
+    except (KeyError, TypeError):
+        return False  # dangling or non-dictionary resource; nothing we can strip
+    if xobj.get(Name.Subtype) != Name.Form:
+        return False  # image XObjects carry no text operators
+    key = (xobj.objgen[0], xobj.objgen[1])
+    if key == (0, 0):
+        return False  # a direct object we cannot identify
+    if key in visited:
+        return visited[key]
+    # A Form XObject may reference itself transitively, so never revisit one.
+    # Mark it as painting while in progress, so a recursive Do is kept.
+    visited[key] = False
+    content, vestigial = _strip_invisible_text_from_content(
+        pdf,
+        cast('Stream', xobj),
+        xobj.get(Name.Resources, Dictionary()),
+        visited,
+        inherited_render_mode,
+    )
+    xobj.write(content)
+    visited[key] = vestigial
+    return vestigial
+
+
+def _strip_invisible_text_from_content(
+    pdf: Pdf,
+    obj: Page | Stream,
+    resources: Object,
+    visited: dict[tuple[int, int], bool],
+    initial_render_mode: int = 0,
+) -> tuple[bytes, bool]:
+    """Strip render-mode-3 text objects from ``obj``'s content stream.
+
+    Returns the rebuilt content stream and whether it paints nothing at all.
+    """
     stream = []
     in_text_obj = False
-    render_mode = 0
+    render_mode = initial_render_mode
     render_mode_stack = []
     text_objects = []
+    vestigial_names: list[Object] = []
 
-    for instruction in parse_content_stream(page, ''):
+    for instruction in parse_content_stream(obj, ''):
         operands, operator = instruction.operands, instruction.operator
         if operator == Operator('Tr'):
             # operands[0] is already a plain int under pikepdf's default
@@ -199,6 +294,21 @@ def strip_invisible_text(pdf: Pdf, page: Page):
             with suppress(IndexError):
                 render_mode = render_mode_stack.pop()
 
+        # OCRmyPDF grafts its own text layer as a Form XObject, so the invisible
+        # text is not in the page content stream at all. The current render mode
+        # is inherited across the Do, and a form that paints nothing once
+        # stripped is no longer drawn.
+        if (
+            operator == Operator('Do')
+            and not in_text_obj
+            and operands
+            and _strip_invisible_text_from_form_xobjects(
+                pdf, resources, operands[0], render_mode, visited
+            )
+        ):
+            vestigial_names.append(operands[0])
+            continue
+
         if not in_text_obj:
             if operator == Operator('BT'):
                 in_text_obj = True
@@ -213,10 +323,26 @@ def strip_invisible_text(pdf: Pdf, page: Page):
                     stream.extend(text_objects)
                 text_objects.clear()
 
+    for name in vestigial_names:
+        # The form is no longer drawn, so unlink it; it drops out at save time.
+        with suppress(KeyError, TypeError):
+            del resources[Name.XObject][cast('Name', name)]
+
+    vestigial = not any(operator in _PAINTING_OPERATORS for _, operator in stream)
+
     # pikepdf's Collection[...] parameter doesn't structurally match our
     # _ObjectList-based tuples even though it works fine at runtime.
-    content_stream = unparse_content_stream(
-        cast('list[tuple[Collection[Object], Operator]]', stream)
+    return (
+        unparse_content_stream(
+            cast('list[tuple[Collection[Object], Operator]]', stream)
+        ),
+        vestigial,
+    )
+
+
+def strip_invisible_text(pdf: Pdf, page: Page):
+    content_stream, _vestigial = _strip_invisible_text_from_content(
+        pdf, page, _page_resources(page), {}
     )
     page.Contents = Stream(pdf, content_stream)
 
