@@ -5,6 +5,37 @@
 
 ## v17.11.0
 
+- `watcher.py` (the `watcher` extra) gained a configurable output layout and
+  conflict policy. These are watcher-only changes; they do not affect the
+  `ocrmypdf` library API.
+    - New `OCR_OUTPUT_STRUCTURE` setting (`--output-structure`): `FLAT`
+      (default, all outputs directly in the destination directory),
+      `YEAR_MONTH` (`{destination}/{year}/{month}/{filename}`, same layout as
+      the old `OCR_OUTPUT_DIRECTORY_YEAR_MONTH=1`), or `HIERARCHY`, which
+      mirrors the input directory tree under the destination, e.g.
+      `input/a/b/c.pdf` → `output/a/b/c.pdf`.
+    - New `OCR_ON_CONFLICT` setting (`--on-conflict`) controls what happens
+      when the intended destination file already exists: `SUFFIX` (default)
+      writes `name (1).pdf`, `name (2).pdf`, ... in the OS style; `SKIP` logs
+      and leaves the file unprocessed; `OVERWRITE` is the old behavior.
+      **Behavior change: the default is now `SUFFIX`, so existing output
+      files are no longer silently overwritten.**
+    - Both settings now apply equally to `OCR_OUTPUT_DIRECTORY` and to the
+      archive directory used by `OCR_ON_SUCCESS_ARCHIVE`; previously the
+      archive directory was always flat and silently overwrote on a name
+      collision.
+    - Output and archive filenames and directory components are sanitized
+      for filesystems more restrictive than the input side (e.g. an SMB
+      share): characters illegal on Windows/SMB (`<>:"/\|?*` and control
+      characters) are replaced with `_`, trailing dots/spaces are stripped,
+      and reserved DOS device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`9`,
+      `LPT1`-`9`) are prefixed with `_`.
+    - `OCR_OUTPUT_DIRECTORY_YEAR_MONTH` is now deprecated in favor of
+      `OCR_OUTPUT_STRUCTURE=YEAR_MONTH`. It is still honored and logs a
+      deprecation warning; if both are set, `OCR_OUTPUT_STRUCTURE` wins.
+    - See the "Watched folders with watcher.py" section of the batch
+      processing documentation for the full description, including a note
+      for SMB users about client-side directory/file-info caching delays.
 - Several OCR jobs may now run concurrently in a single Python process. The API
   previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a second
   call in another thread had to wait for the first to finish. Plugin state is

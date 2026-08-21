@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
 import os
 import shutil
@@ -138,6 +139,152 @@ def watcher_log(tmp_path):
     return tmp_path / 'watcher.log'
 
 
+@pytest.fixture(scope='module')
+def watcher_module():
+    """Import misc/watcher.py directly, to unit test its pure helpers.
+
+    The file is a script rather than part of the installed package, so it has to
+    be loaded by path.
+    """
+    spec = importlib.util.spec_from_file_location('watcher_under_test', WATCHER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    'name, expected',
+    [
+        ('trivial.pdf', 'trivial.pdf'),
+        ('a:b?.pdf', 'a_b_.pdf'),
+        ('<>:"/\\|?*', '_________'),
+        ('bell\x07.pdf', 'bell_.pdf'),
+        ('trailing...', 'trailing'),
+        ('trailing   ', 'trailing'),
+        ('', '_'),
+        ('...', '_'),
+        ('   ', '_'),
+        ('con.pdf', '_con.pdf'),
+        ('CON', '_CON'),
+        ('NuL.tiff', '_NuL.tiff'),
+        ('com1.pdf', '_com1.pdf'),
+        ('LPT9', '_LPT9'),
+        ('contact.pdf', 'contact.pdf'),  # only exact device names are reserved
+        ('com10.pdf', 'com10.pdf'),
+    ],
+)
+def test_sanitize_filename_component(watcher_module, name, expected):
+    assert watcher_module.sanitize_filename_component(name) == expected
+
+
+def test_get_output_path_flat(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'output'
+    input_dir = tmp_path / 'input'
+    assert watcher_module.get_output_path(
+        root, input_dir, input_dir / 'a' / 'b' / 'trivial.PDF', structure.FLAT
+    ) == (root / 'trivial.pdf')
+
+
+def test_get_output_path_year_month(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'output'
+    input_dir = tmp_path / 'input'
+    today = dt.date.today()
+    assert watcher_module.get_output_path(
+        root, input_dir, input_dir / 'trivial.pdf', structure.YEAR_MONTH
+    ) == (root / f'{today.year}' / f'{today.month:02d}' / 'trivial.pdf')
+
+
+def test_get_output_path_hierarchy(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'output'
+    input_dir = tmp_path / 'input'
+    assert watcher_module.get_output_path(
+        root, input_dir, input_dir / 'a' / 'b' / 'trivial.pdf', structure.HIERARCHY
+    ) == (root / 'a' / 'b' / 'trivial.pdf')
+    # A file in the root of the input directory has no subtree to mirror.
+    assert watcher_module.get_output_path(
+        root, input_dir, input_dir / 'trivial.pdf', structure.HIERARCHY
+    ) == (root / 'trivial.pdf')
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="illegal characters on Windows")
+def test_get_output_path_sanitizes_every_component(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'output'
+    input_dir = tmp_path / 'input'
+    assert watcher_module.get_output_path(
+        root, input_dir, input_dir / 'a:b' / 'c?d.pdf', structure.HIERARCHY
+    ) == (root / 'a_b' / 'c_d.pdf')
+
+
+def test_get_output_path_does_not_create_directories(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'output'
+    root.mkdir()
+    input_dir = tmp_path / 'input'
+    path = watcher_module.get_output_path(
+        root, input_dir, input_dir / 'a' / 'b' / 'trivial.pdf', structure.HIERARCHY
+    )
+    assert not path.parent.exists()
+    assert list(root.iterdir()) == []
+
+
+def test_get_output_path_archive_keeps_suffix(watcher_module, tmp_path):
+    structure = watcher_module.OutputStructure
+    root = tmp_path / 'processed'
+    input_dir = tmp_path / 'input'
+    assert watcher_module.get_output_path(
+        root,
+        input_dir,
+        input_dir / 'scan.PDF',
+        structure.FLAT,
+        force_pdf=False,
+    ) == (root / 'scan.PDF')
+
+
+def test_apply_conflict_policy_no_conflict(watcher_module, tmp_path):
+    policy = watcher_module.ConflictPolicy
+    path = tmp_path / 'trivial.pdf'
+    for p in (policy.SKIP, policy.OVERWRITE, policy.SUFFIX):
+        assert watcher_module.apply_conflict_policy(path, p) == path
+
+
+def test_apply_conflict_policy_skip(watcher_module, tmp_path):
+    path = tmp_path / 'trivial.pdf'
+    path.write_bytes(b'sentinel')
+    assert (
+        watcher_module.apply_conflict_policy(path, watcher_module.ConflictPolicy.SKIP)
+        is None
+    )
+
+
+def test_apply_conflict_policy_overwrite(watcher_module, tmp_path):
+    path = tmp_path / 'trivial.pdf'
+    path.write_bytes(b'sentinel')
+    assert (
+        watcher_module.apply_conflict_policy(
+            path, watcher_module.ConflictPolicy.OVERWRITE
+        )
+        == path
+    )
+
+
+def test_apply_conflict_policy_suffix(watcher_module, tmp_path):
+    suffix = watcher_module.ConflictPolicy.SUFFIX
+    path = tmp_path / 'trivial.pdf'
+    path.write_bytes(b'sentinel')
+    assert watcher_module.apply_conflict_policy(path, suffix) == (
+        tmp_path / 'trivial (1).pdf'
+    )
+    (tmp_path / 'trivial (1).pdf').write_bytes(b'sentinel')
+    assert watcher_module.apply_conflict_policy(path, suffix) == (
+        tmp_path / 'trivial (2).pdf'
+    )
+
+
 @pytest.mark.parametrize('year_month', [True, False])
 def test_watcher(data_dirs, watcher_log, resources, year_month):
     input_dir, output_dir, processed_dir, work_dir = data_dirs
@@ -165,6 +312,134 @@ def test_watcher(data_dirs, watcher_log, resources, year_month):
     else:
         expected = output_dir / 'trivial.pdf'
     _wait_for_file(expected, watcher_log)
+
+    deprecation = 'OCR_OUTPUT_DIRECTORY_YEAR_MONTH is deprecated'
+    if year_month:
+        _wait_for_log(watcher_log, deprecation, "the deprecation notice")
+    else:
+        assert deprecation not in _read_log(watcher_log)
+
+    proc.terminate()
+    proc.wait()
+
+
+def test_watcher_output_structure_hierarchy(data_dirs, watcher_log, resources):
+    input_dir, output_dir, processed_dir, work_dir = data_dirs
+
+    # Create the subtree before the watch goes live: the watch is recursive, but
+    # a directory created and filled in the same instant can race the watch.
+    nested = input_dir / 'a' / 'b'
+    nested.mkdir(parents=True)
+
+    proc = _spawn_watcher(
+        input_dir,
+        output_dir,
+        processed_dir,
+        work_dir,
+        watcher_log,
+        env_extra={'OCR_OUTPUT_STRUCTURE': 'HIERARCHY'},
+    )
+    _wait_for_watch_live(input_dir, watcher_log)
+
+    shutil.copy(resources / 'trivial.pdf', nested / 'trivial.pdf')
+    _wait_for_file(output_dir / 'a' / 'b' / 'trivial.pdf', watcher_log)
+
+    proc.terminate()
+    proc.wait()
+
+
+def test_watcher_conflict_suffix_is_default(data_dirs, watcher_log, resources):
+    input_dir, output_dir, processed_dir, work_dir = data_dirs
+
+    sentinel = output_dir / 'trivial.pdf'
+    sentinel.write_bytes(b'sentinel')
+
+    proc = _spawn_watcher(input_dir, output_dir, processed_dir, work_dir, watcher_log)
+    _wait_for_watch_live(input_dir, watcher_log)
+
+    shutil.copy(resources / 'trivial.pdf', input_dir / 'trivial.pdf')
+    _wait_for_file(output_dir / 'trivial (1).pdf', watcher_log)
+
+    assert sentinel.read_bytes() == b'sentinel'
+    proc.terminate()
+    proc.wait()
+
+
+def test_watcher_conflict_skip(data_dirs, watcher_log, resources):
+    input_dir, output_dir, processed_dir, work_dir = data_dirs
+
+    sentinel = output_dir / 'trivial.pdf'
+    sentinel.write_bytes(b'sentinel')
+
+    proc = _spawn_watcher(
+        input_dir,
+        output_dir,
+        processed_dir,
+        work_dir,
+        watcher_log,
+        env_extra={'OCR_ON_CONFLICT': 'SKIP'},
+    )
+    _wait_for_watch_live(input_dir, watcher_log)
+
+    shutil.copy(resources / 'trivial.pdf', input_dir / 'trivial.pdf')
+    _wait_for_log(
+        watcher_log, 'already exists', "the watcher to skip the existing output"
+    )
+
+    assert 'Skipping' in _read_log(watcher_log)
+    assert not (output_dir / 'trivial (1).pdf').exists()
+    assert sentinel.read_bytes() == b'sentinel'
+    assert proc.poll() is None  # still running
+
+    proc.terminate()
+    proc.wait()
+
+
+@pytest.mark.skipif(os.name == 'nt', reason="illegal characters on Windows")
+def test_watcher_sanitizes_output_filename(data_dirs, watcher_log, resources):
+    input_dir, output_dir, processed_dir, work_dir = data_dirs
+
+    proc = _spawn_watcher(input_dir, output_dir, processed_dir, work_dir, watcher_log)
+    _wait_for_watch_live(input_dir, watcher_log)
+
+    # Legal on POSIX, illegal on Windows/SMB: the output name must be repaired.
+    shutil.copy(resources / 'trivial.pdf', input_dir / 'a:b?.pdf')
+    _wait_for_file(output_dir / 'a_b_.pdf', watcher_log)
+
+    proc.terminate()
+    proc.wait()
+
+
+def test_watcher_archive_matches_output_behavior(data_dirs, watcher_log, resources):
+    input_dir, output_dir, processed_dir, work_dir = data_dirs
+
+    nested = input_dir / 'a' / 'b'
+    nested.mkdir(parents=True)
+    occupied = processed_dir / 'a' / 'b' / 'trivial.pdf'
+    occupied.parent.mkdir(parents=True)
+    occupied.write_bytes(b'sentinel')
+
+    proc = _spawn_watcher(
+        input_dir,
+        output_dir,
+        processed_dir,
+        work_dir,
+        watcher_log,
+        env_extra={
+            'OCR_ON_SUCCESS_ARCHIVE': '1',
+            'OCR_OUTPUT_STRUCTURE': 'HIERARCHY',
+        },
+    )
+    _wait_for_watch_live(input_dir, watcher_log)
+
+    shutil.copy(resources / 'trivial.pdf', nested / 'trivial.pdf')
+    _wait_for_file(output_dir / 'a' / 'b' / 'trivial.pdf', watcher_log)
+    # The archive mirrors the input subtree and refuses to overwrite, exactly
+    # like the output directory.
+    _wait_for_file(processed_dir / 'a' / 'b' / 'trivial (1).pdf', watcher_log)
+
+    assert occupied.read_bytes() == b'sentinel'
+    assert not (nested / 'trivial.pdf').exists()
 
     proc.terminate()
     proc.wait()
