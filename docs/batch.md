@@ -143,7 +143,9 @@ header-rows: 1
 * - OCR\_ARCHIVE\_DIRECTORY
   - Set archive directory for processed originals (should not be under input, requires `OCR_ON_SUCCESS_ARCHIVE` to be set)
 * - OCR\_ON\_SUCCESS\_DELETE
-  - This will move the processed original file to `OCR_ARCHIVE_DIRECTORY` if the exit code is 0 (OK). Note that `OCR_ON_SUCCESS_DELETE` takes precedence over this option, i.e. if both options are set, the input file will be deleted.
+  - Delete the input file if the exit code is 0 (OK). Takes precedence over `OCR_ON_SUCCESS_ARCHIVE` if both are set.
+* - OCR\_ON\_SUCCESS\_ARCHIVE
+  - Move the processed original file to `OCR_ARCHIVE_DIRECTORY` if the exit code is 0 (OK). Note that `OCR_ON_SUCCESS_DELETE` takes precedence over this option, i.e. if both options are set, the input file will be deleted.
 * - OCR\_OUTPUT\_STRUCTURE (`--output-structure`)
   - How output (and archived) files are laid out under their destination
     directory. One of `FLAT` (default; all files directly in the
@@ -168,7 +170,7 @@ header-rows: 1
 * - OCR\_POLL\_NEW\_FILE\_SECONDS
   - Polling interval
 * - OCR\_LOGLEVEL
-  - Level of log messages t
+  - Level of log messages (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 :::
 
 One could configure a networked scanner or scanning computer to drop
