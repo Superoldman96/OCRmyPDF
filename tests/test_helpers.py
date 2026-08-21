@@ -125,6 +125,31 @@ def test_shim_paths(tmp_path):
     assert results[-1].endswith(str(Path('gs', '9.51', 'bin'))), results
 
 
+@windows_only
+def test_shim_paths_missing_locations_are_not_warnings(tmp_path, caplog):
+    """Searching for programs that aren't installed must not warn the user.
+
+    Most of the locations searched won't exist on any given machine, so failing
+    to find one is normal and must not be reported above debug level.
+    See discussion #1671.
+    """
+    # pylint: disable=import-outside-toplevel
+    from ocrmypdf.subprocess._windows import shim_env_path
+
+    env = {'PROGRAMFILES': str(tmp_path / 'does not exist'), 'PATH': str(tmp_path)}
+
+    with caplog.at_level(logging.DEBUG, logger='ocrmypdf.subprocess._windows'):
+        shim_env_path(env=env)
+
+    assert not [rec for rec in caplog.records if rec.levelno > logging.DEBUG], (
+        "searching for uninstalled programs should only produce debug messages"
+    )
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any('does not exist' in msg for msg in messages), (
+        f"debug message should name the location that was searched: {messages}"
+    )
+
+
 def test_resolution():
     Resolution = helpers.Resolution
     dpi_100 = Resolution(100, 100)
