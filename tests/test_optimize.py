@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import zlib
 from io import BytesIO
 from os import fspath
 from pathlib import Path
@@ -819,3 +821,102 @@ def test_optimize_output_unchanged_by_png_repackaging(resources, outdir, monkeyp
     via_repackaging = optimized(True)
 
     assert via_repackaging == via_pillow
+
+
+def _pdf_with_jpeg(width=64, height=64):
+    """A one-image PDF whose image is a DeviceRGB JPEG."""
+    buf = BytesIO()
+    Image.new('RGB', (width, height), 'red').save(buf, format='JPEG')
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, buf.getvalue())
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceRGB
+    image.Filter = Name.DCTDecode
+    return pdf, image
+
+
+def _optimize_options(level):
+    return SimpleNamespace(
+        optimize=level, extra_attrs={}, jpeg_quality=75, png_quality=70
+    )
+
+
+@pytest.mark.parametrize('level', [1, 2, 3])
+def test_jpeg_is_never_transcoded_to_png(tmp_path, monkeypatch, level):
+    """A JPEG must not be re-encoded as a PNG.
+
+    Below --optimize 2 OCRmyPDF declines to re-encode JPEGs, and such an image
+    used to fall through to the PNG branch, where it was decoded and saved as a
+    PNG. That PNG is only ever consumed at --optimize 2 and above, so the work
+    was discarded, and any future use of it would apply lossy PNG quantization
+    to a JPEG.
+    """
+    monkeypatch.setattr(ghostscript, 'jpeg_truncation_bug', lambda: False)
+    pdf, image = _pdf_with_jpeg()
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(level)
+    )
+    assert result is None or result.ext == '.jpg'
+    assert not list(tmp_path.glob('*.png'))
+
+
+def test_jpeg_extracted_as_jpeg_when_jpegs_are_optimized(tmp_path):
+    pdf, image = _pdf_with_jpeg()
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(2)
+    )
+    assert result is not None and result.ext == '.jpg'
+
+
+def _pdf_with_one_bit_iccbased_image(width=64, height=64):
+    """A one-image PDF whose image is 1 bit per component in an ICCBased space.
+
+    Kept comfortably above the minimum dimensions and stream size that
+    extract_image_filter() requires, so that a None result is attributable to
+    the behaviour under test.
+    """
+    pdf = pikepdf.new()
+    profile = pikepdf.Stream(pdf, b'\x00' * 128)
+    profile.N = 1
+    # Noise rather than a repeating pattern, so the compressed stream stays
+    # above the minimum size extract_image_filter() insists on.
+    rng = random.Random(0)
+    samples = bytes(rng.getrandbits(8) for _ in range((width // 8) * height))
+    image = pikepdf.Stream(pdf, zlib.compress(samples))
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 1
+    image.ColorSpace = Array([Name.ICCBased, profile])
+    image.Filter = Name.FlateDecode
+    return pdf, image
+
+
+def test_one_bit_image_is_left_to_the_jbig2_pass(tmp_path):
+    """1 bpc images belong to JBIG2, which encodes them better than PNG."""
+    pdf, image = _pdf_with_one_bit_iccbased_image()
+    assert PdfImage(image).bits_per_component == 1
+    # Guard against the image being rejected for an unrelated reason.
+    assert extract_image_filter(image, 1) is not None
+
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(3)
+    )
+    assert result is None
+    assert not list(tmp_path.iterdir()), "nothing should have been extracted"
+
+
+@pytest.mark.skipif(not jbig2enc.available(), reason='need jbig2enc')
+def test_one_bit_iccbased_image_is_extracted_for_jbig2(tmp_path):
+    """The JBIG2 pass neutralizes the colorspace, so ICCBased is handled there."""
+    pdf, image = _pdf_with_one_bit_iccbased_image()
+    result = opt.extract_image_jbig2(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(3)
+    )
+    assert result is not None
+    assert result.ext.startswith('.prejbig2')
+    # The image's own colorspace must be restored after extraction.
+    assert image.ColorSpace[0] == Name.ICCBased

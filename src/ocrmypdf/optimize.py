@@ -306,10 +306,17 @@ def extract_image_generic(
     pim, filtdp = result
 
     # Don't try to PNG-optimize 1bpp images, since JBIG2 does it better.
+    # extract_image_jbig2() takes them, including those in an ICC-based
+    # colorspace, whose profile it neutralizes before extracting.
     if pim.bits_per_component == 1:
         return None
 
-    if filtdp[0] == Name.DCTDecode and _should_optimize_jpeg(options, filtdp):
+    if filtdp[0] == Name.DCTDecode:
+        if not _should_optimize_jpeg(options, filtdp):
+            # Leave it alone. Re-encoding a JPEG as a PNG throws away its
+            # compression for no gain, and hands it to the lossy quantization
+            # that transcode_pngs() applies.
+            return None
         try:
             imgname = root / f'{xref:08d}'
             with imgname.open('wb') as f:
@@ -337,15 +344,6 @@ def extract_image_generic(
         except NotImplementedError:
             log.warning("PDF contains an atypical image that cannot be optimized.")
             return None
-        return XrefExt(xref, '.png')
-    elif (
-        not pim.indexed
-        and pim.colorspace == Name.ICCBased
-        and pim.bits_per_component == 1
-    ):
-        # We can losslessly optimize 1-bit images to CCITT or JBIG2 without
-        # paying any attention to the ICC profile
-        pim.as_pil_image().save(png_name(root, xref))
         return XrefExt(xref, '.png')
 
     return None
