@@ -30,11 +30,14 @@
   10.0s to 7.0s. Output is unchanged: the compressed
   data is reused verbatim. Images that are not in a directly repackageable form
   still take the previous path.
-- JPEG images are no longer re-encoded as PNG. Below `--optimize 2` OCRmyPDF
-  declines to re-encode JPEGs, and such an image fell through to the PNG path,
-  where it was decoded and written out as a PNG. That PNG is only consumed at
-  `--optimize 2` and above, so the work was discarded; had it been used, it
-  would have subjected a JPEG to lossy PNG quantization. Output is unchanged.
+- During image optimization, we decoded all JPEGs, even if the code
+  path was an optimization setting with the decoded JPEG would be never be
+  re-encoded (below `--optimize 2`). We now decode only on code paths that
+  use the decoded JPEG. Output is unchanged.
+- An uncompressed image (one with no `/Filter`) no longer produces a spurious
+  "could not be processed by the optimizer" warning. Such an image raised
+  `IndexError` internally, which the optimizer's best-effort handler caught and
+  reported as a warning; it is now recognized and skipped quietly.
 - Removed an unreachable branch in the image optimizer that claimed to handle
   1 bit per component images in an ICC-based colorspace. An earlier check sends
   every 1 bpc image to the JBIG2 pass, which handles ICC-based images by

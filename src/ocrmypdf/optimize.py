@@ -91,6 +91,13 @@ def extract_image_filter(
 
     pim = PdfImage(image)
 
+    if not pim.filter_decodeparms:
+        # An uncompressed image. There is no filter to reason about, and nothing
+        # downstream knows how to improve one, so leave it alone rather than
+        # letting the lookup below raise.
+        log.debug(f"xref {xref}: skipping image with no compression filter")
+        return None
+
     if len(pim.filter_decodeparms) > 1:
         first_filtdp = pim.filter_decodeparms[0]
         second_filtdp = pim.filter_decodeparms[1]

@@ -920,3 +920,39 @@ def test_one_bit_iccbased_image_is_extracted_for_jbig2(tmp_path):
     assert result.ext.startswith('.prejbig2')
     # The image's own colorspace must be restored after extraction.
     assert image.ColorSpace[0] == Name.ICCBased
+
+
+def test_extract_image_filter_with_no_compression_filter():
+    """An uncompressed image has no filter to inspect, and is not extractable."""
+    image = Dictionary()
+    image.Subtype = Name.Image
+    image.Length = 200
+    image.Width = 10
+    image.Height = 10
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    assert extract_image_filter(image, None) is None
+
+
+def test_uncompressed_image_is_skipped_quietly(tmp_path, caplog):
+    """Declining an uncompressed image is routine, not an error worth warning about."""
+    width = height = 64
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, b'\x80' * width * height)
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    page = pdf.add_blank_page(page_size=(width, height))
+    page.Resources = Dictionary(XObject=Dictionary(Im0=image))
+
+    caplog.set_level(logging.DEBUG, logger='ocrmypdf.optimize')
+    results = list(
+        opt.extract_images(
+            pdf, tmp_path, _optimize_options(1), opt.extract_image_generic
+        )
+    )
+
+    assert results == []
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
