@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import zlib
 from io import BytesIO
 from os import fspath
 from pathlib import Path
@@ -21,6 +23,7 @@ from ocrmypdf import optimize as opt
 from ocrmypdf._exec import ghostscript, jbig2enc, pngquant
 from ocrmypdf._exec.ghostscript import GS_GENERATED_PDFA, rasterize_pdf
 from ocrmypdf._options import OcrOptions
+from ocrmypdf._pipeline import get_pdf_save_settings
 from ocrmypdf.builtin_plugins import optimize as optimize_plugin
 from ocrmypdf.builtin_plugins.optimize import OptimizeOptions
 from ocrmypdf.cli import get_options_and_plugins
@@ -681,3 +684,364 @@ class TestOptimizePdfMessages:
 def test_is_optimization_enabled(level, enabled):
     context = SimpleNamespace(options=_plugin_opts('--optimize', str(level)))
     assert optimize_plugin.is_optimization_enabled(context) is enabled
+
+
+def _first_flate_predictor_image(pdf: pikepdf.Pdf):
+    """Return the first image stored as FlateDecode with a PNG predictor."""
+    for page in pdf.pages:
+        for _name, image in page.get_images().items():
+            decode_parms = image.get(Name.DecodeParms)
+            if (
+                image.get(Name.Filter) == Name.FlateDecode
+                and decode_parms is not None
+                and int(decode_parms.get(Name.Predictor, 1)) >= 10
+            ):
+                return image
+    raise AssertionError("no Flate/PNG-predictor image in this PDF")
+
+
+@pytest.mark.parametrize(
+    ('filename', 'colorspace'),
+    [('graph.pdf', Name.DeviceRGB), ('3small.pdf', Name.DeviceGray)],
+)
+def test_png_repackaging_matches_pillow(resources, filename, colorspace):
+    """Repackaging must produce the same pixels as decoding with Pillow."""
+    with pikepdf.open(resources / filename) as pdf:
+        image = _first_flate_predictor_image(pdf)
+        assert image.get(Name.ColorSpace) == colorspace
+        pdf_image = PdfImage(image)
+
+        png = opt.png_from_flate_predictor(pdf_image, image)
+        assert png is not None, "image should be repackageable"
+        assert png.startswith(b'\x89PNG\r\n\x1a\n')
+
+        repackaged = Image.open(BytesIO(png))
+        expected = pdf_image.as_pil_image()
+        assert repackaged.size == expected.size
+        assert repackaged.convert('RGB').tobytes() == expected.convert('RGB').tobytes()
+
+
+def test_png_repackaging_reuses_the_stream_verbatim(resources):
+    """The point of repackaging is that the compressed data is not touched."""
+    with pikepdf.open(resources / 'graph.pdf') as pdf:
+        image = _first_flate_predictor_image(pdf)
+        png = opt.png_from_flate_predictor(PdfImage(image), image)
+        assert png is not None
+        assert bytes(image.read_raw_bytes()) in png
+
+
+def _synthetic_image(**overrides):
+    """Build a minimal Flate/PNG-predictor image dictionary."""
+    image = Dictionary()
+    image.Subtype = Name.Image
+    image.Width = 8
+    image.Height = 8
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceRGB
+    image.Filter = Name.FlateDecode
+    image.DecodeParms = Dictionary(
+        Predictor=15, Colors=3, BitsPerComponent=8, Columns=8
+    )
+    for key, value in overrides.items():
+        if value is None:
+            del image[f'/{key}']
+        else:
+            image[f'/{key}'] = value
+    return image
+
+
+@pytest.mark.parametrize(
+    ('description', 'overrides'),
+    [
+        ('no predictor', dict(DecodeParms=Dictionary(Predictor=1, Colors=3))),
+        ('no decode parms', dict(DecodeParms=None)),
+        ('cascaded filters', dict(Filter=Array([Name.FlateDecode, Name.DCTDecode]))),
+        ('unsupported filter', dict(Filter=Name.DCTDecode)),
+        ('unsupported colorspace', dict(ColorSpace=Name.DeviceCMYK)),
+        (
+            'truecolor below 8 bits per component',
+            dict(
+                BitsPerComponent=4,
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=4, Columns=8
+                ),
+            ),
+        ),
+        (
+            'colors disagree with colorspace',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=1, BitsPerComponent=8, Columns=8
+                )
+            ),
+        ),
+        (
+            'columns disagree with width',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=8, Columns=16
+                )
+            ),
+        ),
+        (
+            'bits per component disagree',
+            dict(
+                DecodeParms=Dictionary(
+                    Predictor=15, Colors=3, BitsPerComponent=4, Columns=8
+                )
+            ),
+        ),
+        ('decode array', dict(Decode=Array([1, 0, 1, 0, 1, 0]))),
+    ],
+)
+def test_png_repackaging_declines(description, overrides):
+    """Anything not directly repackageable must fall back to Pillow."""
+    image = _synthetic_image(**overrides)
+    assert opt.png_from_flate_predictor(PdfImage(image), image) is None, description
+
+
+def test_optimize_output_unchanged_by_png_repackaging(resources, outdir, monkeypatch):
+    """Repackaging must not change what optimization produces."""
+
+    def optimized(use_repackaging: bool) -> list[bytes]:
+        if not use_repackaging:
+            monkeypatch.setattr(
+                opt, 'png_from_flate_predictor', lambda *args, **kwargs: None
+            )
+        out = outdir / f'{use_repackaging}.pdf'
+        opt.main(fspath(resources / 'graph.pdf'), fspath(out), '1')
+        with pikepdf.open(out) as pdf:
+            return [
+                PdfImage(image).as_pil_image().convert('RGB').tobytes()
+                for page in pdf.pages
+                for _name, image in page.get_images().items()
+            ]
+
+    with monkeypatch.context():
+        via_pillow = optimized(False)
+    via_repackaging = optimized(True)
+
+    assert via_repackaging == via_pillow
+
+
+def _pdf_with_jpeg(width=64, height=64):
+    """A one-image PDF whose image is a DeviceRGB JPEG."""
+    buf = BytesIO()
+    Image.new('RGB', (width, height), 'red').save(buf, format='JPEG')
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, buf.getvalue())
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceRGB
+    image.Filter = Name.DCTDecode
+    return pdf, image
+
+
+def _optimize_options(level):
+    return SimpleNamespace(
+        optimize=level, extra_attrs={}, jpeg_quality=75, png_quality=70
+    )
+
+
+@pytest.mark.parametrize('level', [1, 2, 3])
+def test_jpeg_is_never_transcoded_to_png(tmp_path, monkeypatch, level):
+    """A JPEG must not be re-encoded as a PNG.
+
+    Below --optimize 2 OCRmyPDF declines to re-encode JPEGs, and such an image
+    used to fall through to the PNG branch, where it was decoded and saved as a
+    PNG. That PNG is only ever consumed at --optimize 2 and above, so the work
+    was discarded, and any future use of it would apply lossy PNG quantization
+    to a JPEG.
+    """
+    monkeypatch.setattr(ghostscript, 'jpeg_truncation_bug', lambda: False)
+    pdf, image = _pdf_with_jpeg()
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(level)
+    )
+    assert result is None or result.ext == '.jpg'
+    assert not list(tmp_path.glob('*.png'))
+
+
+def test_jpeg_extracted_as_jpeg_when_jpegs_are_optimized(tmp_path):
+    pdf, image = _pdf_with_jpeg()
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(2)
+    )
+    assert result is not None and result.ext == '.jpg'
+
+
+def _pdf_with_one_bit_iccbased_image(width=64, height=64):
+    """A one-image PDF whose image is 1 bit per component in an ICCBased space.
+
+    Kept comfortably above the minimum dimensions and stream size that
+    extract_image_filter() requires, so that a None result is attributable to
+    the behaviour under test.
+    """
+    pdf = pikepdf.new()
+    profile = pikepdf.Stream(pdf, b'\x00' * 128)
+    profile.N = 1
+    # Noise rather than a repeating pattern, so the compressed stream stays
+    # above the minimum size extract_image_filter() insists on.
+    rng = random.Random(0)
+    samples = bytes(rng.getrandbits(8) for _ in range((width // 8) * height))
+    image = pikepdf.Stream(pdf, zlib.compress(samples))
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 1
+    image.ColorSpace = Array([Name.ICCBased, profile])
+    image.Filter = Name.FlateDecode
+    return pdf, image
+
+
+def test_one_bit_image_is_left_to_the_jbig2_pass(tmp_path):
+    """1 bpc images belong to JBIG2, which encodes them better than PNG."""
+    pdf, image = _pdf_with_one_bit_iccbased_image()
+    assert PdfImage(image).bits_per_component == 1
+    # Guard against the image being rejected for an unrelated reason.
+    assert extract_image_filter(image, 1) is not None
+
+    result = opt.extract_image_generic(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(3)
+    )
+    assert result is None
+    assert not list(tmp_path.iterdir()), "nothing should have been extracted"
+
+
+@pytest.mark.skipif(not jbig2enc.available(), reason='need jbig2enc')
+def test_one_bit_iccbased_image_is_extracted_for_jbig2(tmp_path):
+    """The JBIG2 pass neutralizes the colorspace, so ICCBased is handled there."""
+    pdf, image = _pdf_with_one_bit_iccbased_image()
+    result = opt.extract_image_jbig2(
+        pdf=pdf, root=tmp_path, image=image, xref=1, options=_optimize_options(3)
+    )
+    assert result is not None
+    assert result.ext.startswith('.prejbig2')
+    # The image's own colorspace must be restored after extraction.
+    assert image.ColorSpace[0] == Name.ICCBased
+
+
+def test_extract_image_filter_with_no_compression_filter():
+    """An uncompressed image has no filter to inspect, and is not extractable."""
+    image = Dictionary()
+    image.Subtype = Name.Image
+    image.Length = 200
+    image.Width = 10
+    image.Height = 10
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    assert extract_image_filter(image, None) is None
+
+
+def test_uncompressed_image_is_skipped_quietly(tmp_path, caplog):
+    """Declining an uncompressed image is routine, not an error worth warning about."""
+    width = height = 64
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, b'\x80' * width * height)
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    page = pdf.add_blank_page(page_size=(width, height))
+    page.Resources = Dictionary(XObject=Dictionary(Im0=image))
+
+    caplog.set_level(logging.DEBUG, logger='ocrmypdf.optimize')
+    results = list(
+        opt.extract_images(
+            pdf, tmp_path, _optimize_options(1), opt.extract_image_generic
+        )
+    )
+
+    assert results == []
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+def _pdf_with_image(payload: bytes, filter_name, width=64, height=64):
+    pdf = pikepdf.new()
+    image = pikepdf.Stream(pdf, payload)
+    image.Subtype = Name.Image
+    image.Width = width
+    image.Height = height
+    image.BitsPerComponent = 8
+    image.ColorSpace = Name.DeviceGray
+    if filter_name is not None:
+        image.Filter = filter_name
+    page = pdf.add_blank_page(page_size=(width, height))
+    page.Resources = Dictionary(XObject=Dictionary(Im0=image))
+    return pdf
+
+
+def _saved_filter(pdf, **save_settings):
+    buf = BytesIO()
+    pdf.save(buf, **save_settings)
+    with pikepdf.open(buf) as saved:
+        return saved.pages[0].Resources.XObject.Im0.get(Name.Filter)
+
+
+_SAMPLES = bytes(range(256)) * 16
+
+
+def _run_length_encode(data: bytes) -> bytes:
+    """PDF RunLengthDecode, literal runs only."""
+    out = bytearray()
+    for i in range(0, len(data), 128):
+        chunk = data[i : i + 128]
+        out.append(len(chunk) - 1)
+        out += chunk
+    out.append(128)  # EOD
+    return bytes(out)
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_compresses_an_uncompressed_image(output_type):
+    """The optimizer declines uncompressed images because saving handles them.
+
+    extract_image_filter() returns None for an image with no /Filter. That is
+    only the right call because pdf.save(compress_streams=True) Flate-encodes
+    such a stream.
+    """
+    pdf = _pdf_with_image(_SAMPLES, None)
+    assert extract_image_filter(pdf.pages[0].Resources.XObject.Im0, 1) is None
+    assert _saved_filter(pdf, **get_pdf_save_settings(output_type)) == Name.FlateDecode
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_re_encodes_a_general_purpose_filter_as_flate(output_type):
+    """Saving modernizes qpdf's "generalized" filters, so the optimizer need not.
+
+    /ASCIIHexDecode stands in for that class, which also includes /LZWDecode.
+    """
+    payload = _SAMPLES.hex().encode() + b'>'
+    pdf = _pdf_with_image(payload, Name.ASCIIHexDecode)
+    assert _saved_filter(pdf, **get_pdf_save_settings(output_type)) == Name.FlateDecode
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1'])
+def test_saving_does_not_modernize_run_length_encoding(output_type):
+    """Qpdf treats /RunLengthDecode as an image filter, not a general one.
+
+    Unlike /LZWDecode and /ASCIIHexDecode it survives a save at the decode
+    levels OCRmyPDF uses, so it is the one obsolete encoding that saving does
+    not take care of. Recorded so a change in qpdf is noticed rather than
+    silently widening what saving covers.
+    """
+    payload = _run_length_encode(_SAMPLES)
+    assert (
+        _saved_filter(
+            _pdf_with_image(payload, Name.RunLengthDecode),
+            **get_pdf_save_settings(output_type),
+        )
+        == Name.RunLengthDecode
+    )
+    # It would be converted if OCRmyPDF asked for a deeper decode level.
+    assert (
+        _saved_filter(
+            _pdf_with_image(payload, Name.RunLengthDecode),
+            compress_streams=True,
+            stream_decode_level=pikepdf.StreamDecodeLevel.specialized,
+        )
+        == Name.FlateDecode
+    )

@@ -26,6 +26,12 @@ def _task_finished_noop(_result: Any, pbar: ProgressBar):
 class Executor(ABC):
     """Abstract concurrent executor."""
 
+    #: Deprecated and unused. ``Executor.__call__`` no longer serializes worker
+    #: pools, so that several OCR jobs may run concurrently in one interpreter.
+    #: The invariant this used to protect - that only one progress bar renders
+    #: on the shared console - is now enforced by the progress bar itself.
+    #: Retained so that third-party ``_execute`` overrides referencing it keep
+    #: working; it will be removed in a future major release.
     pool_lock = threading.Lock()
     pbar_class = NullProgressBar
 
@@ -77,16 +83,15 @@ class Executor(ABC):
             # own no-op default accepts Any, so this is safe.
             task = cast('Callable[..., T]', _task_noop)
 
-        with self.pool_lock:
-            self._execute(
-                use_threads=use_threads,
-                max_workers=max_workers,
-                progress_kwargs=progress_kwargs,
-                worker_initializer=worker_initializer,
-                task=task,
-                task_arguments=task_arguments,
-                task_finished=task_finished,
-            )
+        self._execute(
+            use_threads=use_threads,
+            max_workers=max_workers,
+            progress_kwargs=progress_kwargs,
+            worker_initializer=worker_initializer,
+            task=task,
+            task_arguments=task_arguments,
+            task_finished=task_finished,
+        )
 
     @abstractmethod
     def _execute(

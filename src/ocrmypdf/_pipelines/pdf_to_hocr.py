@@ -31,7 +31,7 @@ from ocrmypdf._pipelines._common import (
     setup_pipeline,
     worker_init,
 )
-from ocrmypdf._plugin_manager import OcrmypdfPluginManager
+from ocrmypdf._plugin_manager import OcrmypdfPluginManager, plugin_lock
 from ocrmypdf.helpers import available_cpu_count
 
 log = logging.getLogger(__name__)
@@ -95,9 +95,13 @@ def run_hocr_pipeline(
     # This pipeline is only reachable via the _pdf_to_hocr() API, which
     # declares input_pdf: Path - streams and raw bytes paths are not supported.
     assert isinstance(options.input_file, str | os.PathLike)
-    with manage_work_folder(
-        work_folder=options.output_folder, retain=True, print_location=False
-    ) as work_folder:
+    with (
+        # See the note in _pipelines/ocr.py; this guards the same global state.
+        plugin_lock.shared(),
+        manage_work_folder(
+            work_folder=options.output_folder, retain=True, print_location=False
+        ) as work_folder,
+    ):
         executor = setup_pipeline(options, plugin_manager)
         origin_pdf = work_folder / 'origin.pdf'
         shutil.copy2(options.input_file, origin_pdf)

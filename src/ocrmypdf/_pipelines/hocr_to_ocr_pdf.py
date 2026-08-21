@@ -28,7 +28,7 @@ from ocrmypdf._pipelines._common import (
     setup_pipeline,
     worker_init,
 )
-from ocrmypdf._plugin_manager import OcrmypdfPluginManager
+from ocrmypdf._plugin_manager import OcrmypdfPluginManager, plugin_lock
 from ocrmypdf._progressbar import ProgressBar
 from ocrmypdf.exceptions import ExitCode
 from ocrmypdf.helpers import available_cpu_count
@@ -112,9 +112,13 @@ def run_hocr_to_ocr_pdf_pipeline(
     # The _hocr_to_ocr_pdf() API requires work_folder: Path and stores it on
     # options before this pipeline runs, so it is always set at this point.
     assert options.work_folder is not None
-    with manage_work_folder(
-        work_folder=options.work_folder, retain=True, print_location=False
-    ) as work_folder:
+    with (
+        # See the note in _pipelines/ocr.py; this guards the same global state.
+        plugin_lock.shared(),
+        manage_work_folder(
+            work_folder=options.work_folder, retain=True, print_location=False
+        ) as work_folder,
+    ):
         executor = setup_pipeline(options, plugin_manager)
         origin_pdf = work_folder / 'origin.pdf'
 

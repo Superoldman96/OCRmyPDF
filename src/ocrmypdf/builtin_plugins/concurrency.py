@@ -201,15 +201,60 @@ def get_executor(progressbar_class):
 
 RICH_CONSOLE = RichConsole(stderr=True)
 
+# rich permits only one Live display per Console. On rich 13/14 a second
+# concurrent Live raises LiveError; on rich 15 the nested Live is suppressed,
+# but Console.clear_live() pops the top of the live stack rather than the
+# caller's own entry, so out-of-order teardown corrupts it. When several OCR
+# jobs share this interpreter, the first progress bar to claim the console
+# renders and the others render nothing.
+#
+# Ownership is per progress bar, not per job: a job creates several bars in
+# sequence, so concurrent jobs trade the console between pipeline steps and the
+# visible bar may hop between them. Sticky per-job ownership would need a
+# release hook that the plugin interface does not provide.
+_console_owner_lock = threading.Lock()
+
+
+class ConsoleOwnerRichProgressBar(RichProgressBar):
+    """Rich progress bar that renders only if it can claim the shared console."""
+
+    def __init__(self, *, disable: bool = False, **kwargs):
+        """Claim the shared console, disabling this bar if another owns it."""
+        self._owns_console = _console_owner_lock.acquire(blocking=False)
+        try:
+            super().__init__(
+                console=RICH_CONSOLE,
+                disable=disable or not self._owns_console,
+                **kwargs,
+            )
+        except BaseException:
+            self._release_console()
+            raise
+
+    def __enter__(self):
+        try:
+            return super().__enter__()
+        except BaseException:
+            # Python does not call __exit__ if __enter__ raises.
+            self._release_console()
+            raise
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self._release_console()
+
+    def _release_console(self) -> None:
+        if self._owns_console:
+            self._owns_console = False
+            _console_owner_lock.release()
+
 
 @hookimpl
 def get_progressbar_class():
     """Return the default progress bar class."""
-
-    def partial_RichProgressBar(*args, **kwargs):
-        return RichProgressBar(*args, **kwargs, console=RICH_CONSOLE)
-
-    return partial_RichProgressBar
+    return ConsoleOwnerRichProgressBar
 
 
 @hookimpl

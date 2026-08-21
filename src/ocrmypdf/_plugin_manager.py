@@ -23,6 +23,7 @@ from ocrmypdf import Executor, PdfContext, pluginspec
 from ocrmypdf._options import OcrOptions
 from ocrmypdf._plugin_registry import PluginOptionRegistry
 from ocrmypdf._progressbar import ProgressBar
+from ocrmypdf._rwlock import RWLock
 from ocrmypdf.helpers import Resolution
 from ocrmypdf.pluginspec import OcrEngine
 
@@ -287,4 +288,15 @@ def get_plugin_manager(
     )
 
 
-__all__ = ['OcrmypdfPluginManager', 'get_plugin_manager']
+#: Guards interpreter-global plugin state: ``sys.modules`` entries for plugins
+#: given as file paths, the plugin option model registry that
+#: :class:`ocrmypdf.OcrOptions` consults, and whatever the ``initialize`` and
+#: ``add_options`` hooks touch, which the plugin spec permits to be global.
+#:
+#: Installing plugins takes it exclusively; a job holds it shared for its whole
+#: run. An OCR job cannot survive the plugin infrastructure being replaced
+#: underneath it, so installation waits for in-flight jobs to finish.
+plugin_lock = RWLock()
+
+
+__all__ = ['OcrmypdfPluginManager', 'get_plugin_manager', 'plugin_lock']

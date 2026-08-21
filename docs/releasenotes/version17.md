@@ -3,6 +3,59 @@
 
 # v17
 
+## v17.11.0
+
+- Several OCR jobs may now run concurrently in a single Python process. The API
+  previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a second
+  call in another thread had to wait for the first to finish. Plugin state is
+  now guarded by a readers-writer lock: installing a plugin set takes it
+  exclusively, and a job holds it shared for its run. An in-flight job therefore
+  cannot have the plugin infrastructure it depends on replaced underneath it,
+  while jobs that are past installation proceed concurrently.
+- A plugin set is now installed once per interpreter and reused, rather than
+  being reinstalled on every call. Previously each `ocrmypdf.ocr()` call
+  re-executed plugin modules given as file paths and rebound them in
+  `sys.modules`. Plugins must not rely on being re-executed for each job, and
+  must not store per-job state on the plugin manager, which concurrent jobs
+  requesting the same plugin set now share.
+- Jobs requesting different plugin sets serialize against each other, since
+  installing the second set must wait for the first set's jobs to finish. Use
+  the same plugin set across concurrent jobs, or separate processes.
+- Image optimization is substantially faster on documents with large images.
+  An image stored as `/FlateDecode` with a PNG predictor already holds exactly
+  what a PNG `IDAT` chunk holds, so it is now repackaged as a PNG directly
+  instead of being decoded to a bitmap and re-encoded. On a 6-page document
+  containing one 9000x9000 image, the optimization step went from 3.4s to 0.6s,
+  and to 0.04s together with the JPEG change below; total runtime went from
+  10.0s to 7.0s. Output is unchanged: the compressed
+  data is reused verbatim. Images that are not in a directly repackageable form
+  still take the previous path.
+- During image optimization, we decoded all JPEGs, even if the code
+  path was an optimization setting with the decoded JPEG would be never be
+  re-encoded (below `--optimize 2`). We now decode only on code paths that
+  use the decoded JPEG. Output is unchanged.
+- An uncompressed image (one with no `/Filter`) no longer produces a spurious
+  "could not be processed by the optimizer" warning. Such an image raised
+  `IndexError` internally, which the optimizer's best-effort handler caught and
+  reported as a warning; it is now recognized and skipped quietly.
+- Removed an unreachable branch in the image optimizer that claimed to handle
+  1 bit per component images in an ICC-based colorspace. An earlier check sends
+  every 1 bpc image to the JBIG2 pass, which handles ICC-based images by
+  neutralizing the profile before extracting, so the branch could never run.
+- Removed the process-wide lock that serialized worker pools across all
+  `Executor` instances. `Executor.pool_lock` is retained but no longer acquired,
+  and is deprecated; it will be removed in a future major release. The invariant
+  it protected - that only one progress bar renders on the shared console - is
+  now enforced by the progress bar, which disables itself if another bar already
+  owns the console.
+- Note that N concurrent jobs each configured with `jobs=M` may now spawn up to
+  N*M workers, where previously they were serialized to M. Size `jobs`
+  accordingly.
+- Known limitation of concurrent in-process jobs: they must use the same
+  `max_image_mpixels`. Pillow's decompression-bomb limit is interpreter-global
+  and the last job to set it wins. Use separate processes to run jobs with
+  differing configurations.
+
 ## v17.10.0
 
 - The `watcher.py` watched-folder helper (the `watcher` extra) has been

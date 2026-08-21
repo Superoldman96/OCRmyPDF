@@ -111,10 +111,29 @@ Programs that call {func}`ocrmypdf.ocr()` should also install a SIGBUS signal
 handler (except on Windows), to raise an exception if access to a memory
 mapped file fails. OCRmyPDF may use memory mapping.
 
-{func}`ocrmypdf.ocr()` will take a threading lock to prevent multiple runs of itself
-in the same Python interpreter process. This is not thread-safe, because of how
-OCRmyPDF's plugins and Python's library import system work. If you need to parallelize
-OCRmyPDF, use processes.
+Several OCR jobs may run concurrently in the same Python interpreter process.
+
+Installing a plugin set mutates interpreter-global state, because of how OCRmyPDF's
+plugins and Python's library import system work, and a running job cannot survive
+that state being replaced underneath it. {func}`ocrmypdf.ocr()` therefore takes a
+readers-writer lock: installing a plugin set takes it exclusively, so it waits for
+every job already running, while a job holds it shared for its own run. A plugin set
+is installed once per interpreter and reused thereafter, so a job that asks for a
+plugin set some earlier job already installed never blocks.
+
+The practical consequence is that concurrent jobs should all use the same plugin
+set. Jobs requesting different plugin sets serialize against each other. They must
+also use the same `max_image_mpixels`, since Pillow's decompression-bomb limit is
+interpreter-global and the last job to set it wins. If you need to run jobs with
+differing configurations, use separate processes.
+
+Because a plugin set is installed only once, a plugin module given as a file path is
+executed once per interpreter rather than once per call. Plugins must not rely on
+being re-executed for each job, and must not store per-job state on the plugin
+manager, which concurrent jobs may share.
+
+Note that N concurrent jobs each configured with `jobs=M` may spawn up to N*M
+workers, so size `jobs` accordingly.
 
 :::{warning}
 On Windows and macOS, the script that calls {func}`ocrmypdf.ocr()` must be
