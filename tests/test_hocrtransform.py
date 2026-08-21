@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import sys
 from io import StringIO
 from pathlib import Path
 
@@ -121,4 +122,12 @@ def test_fpdf2_matches_sandwich(resources, outdir):
 
     similarity = len(fpdf2_words & tess_words) / len(fpdf2_words | tess_words)
 
-    assert similarity > 0.99
+    # The Windows Tesseract build (UB Mannheim) emits slightly different
+    # hOCR/PDF coordinates than Linux/macOS builds, flipping a few borderline
+    # pdfminer word-merge decisions, so allow it more slack.
+    threshold = 0.95 if sys.platform == 'win32' else 0.99
+    assert similarity > threshold, (
+        f"similarity {similarity} <= {threshold}\n"
+        f"fpdf2 only: {sorted(fpdf2_words - tess_words)}\n"
+        f"sandwich only: {sorted(tess_words - fpdf2_words)}"
+    )
