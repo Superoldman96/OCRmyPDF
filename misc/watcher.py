@@ -11,6 +11,7 @@ import datetime as dt
 import fnmatch
 import json
 import logging
+import os
 import shutil
 import sys
 import time
@@ -57,19 +58,100 @@ class LoggingLevelEnum(StrEnum):
     CRITICAL = "CRITICAL"
 
 
-def get_output_path(root: Path, basename: str, output_dir_year_month: bool) -> Path:
-    assert '/' not in basename, "basename must not contain '/'"
-    if output_dir_year_month:
+class OutputStructure(StrEnum):
+    """Enum for the directory layout of the output and archive directories."""
+
+    FLAT = "FLAT"
+    YEAR_MONTH = "YEAR_MONTH"
+    HIERARCHY = "HIERARCHY"
+
+
+class ConflictPolicy(StrEnum):
+    """Enum for what to do when a destination file already exists."""
+
+    SKIP = "SKIP"
+    OVERWRITE = "OVERWRITE"
+    SUFFIX = "SUFFIX"
+
+
+# Illegal in a Windows/SMB filename; a superset of what POSIX forbids.
+_ILLEGAL_FILENAME_CHARS = frozenset('<>:"/\\|?*')
+
+# Windows refuses these names whatever the extension.
+_RESERVED_DEVICE_NAMES = frozenset(
+    ['CON', 'PRN', 'AUX', 'NUL']
+    + [f'COM{n}' for n in range(1, 10)]
+    + [f'LPT{n}' for n in range(1, 10)]
+)
+
+
+def sanitize_filename_component(name: str) -> str:
+    """Rewrite one path component so it can be created on any common filesystem.
+
+    The output side is often a more restrictive filesystem than the input side --
+    an SMB share, say -- so characters that are merely unusual on POSIX are
+    replaced rather than passed through and left to fail at write time.
+    """
+    cleaned = ''.join(
+        '_' if ch in _ILLEGAL_FILENAME_CHARS or ord(ch) < 32 else ch for ch in name
+    )
+    # Windows silently drops trailing dots and spaces, so the name we asked for
+    # would not be the name on disk.
+    cleaned = cleaned.rstrip('. ')
+    if Path(cleaned).stem.upper() in _RESERVED_DEVICE_NAMES:
+        cleaned = f'_{cleaned}'
+    return cleaned or '_'
+
+
+def get_output_path(
+    root: Path,
+    input_dir: Path,
+    file_path: Path,
+    structure: OutputStructure,
+    *,
+    force_pdf: bool = True,
+) -> Path:
+    """Build the destination path for ``file_path`` under ``root``.
+
+    Every component is sanitized. ``force_pdf`` is for the output directory,
+    where the result is always a PDF; the archive keeps the original suffix.
+    This never creates directories -- the caller does that, after the
+    destination has passed the safety check.
+    """
+    parts: list[str] = []
+    if structure == OutputStructure.YEAR_MONTH:
         today = dt.datetime.today()
-        output_directory_year_month = root / str(today.year) / f'{today.month:02d}'
-        if not output_directory_year_month.exists():
-            output_directory_year_month.mkdir(parents=True, exist_ok=True)
-        output_path = Path(output_directory_year_month) / Path(basename).with_suffix(
-            '.pdf'
-        )
-    else:
-        output_path = root / Path(basename).with_suffix('.pdf')
-    return output_path
+        parts = [str(today.year), f'{today.month:02d}']
+    elif structure == OutputStructure.HIERARCHY:
+        relative = os.path.relpath(file_path.parent, input_dir)
+        parts = [p for p in Path(relative).parts if p not in ('.', '..')]
+
+    # Sanitize before touching the suffix: an unsanitized name may contain
+    # characters (':' above all) that Path parses as something other than a name.
+    name = sanitize_filename_component(file_path.name)
+    if force_pdf:
+        name = Path(name).with_suffix('.pdf').name
+    return root.joinpath(*(sanitize_filename_component(p) for p in parts), name)
+
+
+def apply_conflict_policy(path: Path, policy: ConflictPolicy) -> Path | None:
+    """Resolve a destination that may already be occupied.
+
+    Returns the path to write to, or None if the file must be left alone.
+    """
+    if not path.exists():
+        return path
+    if policy == ConflictPolicy.OVERWRITE:
+        return path
+    if policy == ConflictPolicy.SKIP:
+        return None
+    # SUFFIX: the numbering Windows Explorer and macOS Finder both produce.
+    counter = 1
+    while True:
+        candidate = path.with_name(f'{path.stem} ({counter}){path.suffix}')
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 def wait_for_file_ready(
@@ -118,7 +200,8 @@ def execute_ocrmypdf(
     on_success_archive: bool,
     poll_new_file_seconds: int,
     retries_loading_file: int,
-    output_dir_year_month: bool,
+    output_structure: OutputStructure,
+    on_conflict: ConflictPolicy,
 ):
     # Re-check right before use to shrink the TOCTOU window: reject symlinks and
     # non-regular files, and anything that resolves outside the watched tree.
@@ -126,9 +209,18 @@ def execute_ocrmypdf(
         log.warning(f'Ignoring {file_path}: not a regular file within {input_dir}')
         return
 
-    output_path = get_output_path(output_dir, file_path.name, output_dir_year_month)
-
     log.info("-" * 20)
+
+    # Settle the destination before waiting for the file: a skipped file should
+    # cost neither the wait nor the OCR run.
+    intended_output = get_output_path(
+        output_dir, input_dir, file_path, output_structure
+    )
+    output_path = apply_conflict_policy(intended_output, on_conflict)
+    if output_path is None:
+        log.info(f'Skipping {file_path}: output {intended_output} already exists')
+        return
+
     log.info(f'New file: {file_path}. Waiting until fully written...')
     if not wait_for_file_ready(file_path, poll_new_file_seconds, retries_loading_file):
         log.info(f"Gave up waiting for {file_path} to become ready")
@@ -140,6 +232,7 @@ def execute_ocrmypdf(
             f'by a non-regular file or escapes {output_dir}'
         )
         return
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     log.info(f'Attempting to OCRmyPDF to: {output_path}')
 
     log.debug(
@@ -158,14 +251,29 @@ def execute_ocrmypdf(
             log.info(f'OCR is done. Deleting: {file_path}')
             file_path.unlink()
         elif on_success_archive:
-            archive_path = archive_dir / file_path.name
+            # Same structure and same conflict policy as the output directory.
+            intended_archive = get_output_path(
+                archive_dir,
+                input_dir,
+                file_path,
+                output_structure,
+                force_pdf=False,
+            )
+            archive_path = apply_conflict_policy(intended_archive, on_conflict)
+            if archive_path is None:
+                log.info(
+                    f'Not archiving {file_path}: {intended_archive} already '
+                    f'exists; leaving the original in {input_dir}'
+                )
+                return
             if not is_safe_write_target(archive_path, archive_dir):
                 log.error(
                     f'Refusing to archive to {archive_path}: destination is '
                     f'occupied by a non-regular file or escapes {archive_dir}'
                 )
                 return
-            log.info(f'OCR is done. Archiving {file_path.name} to {archive_dir}')
+            archive_path.parent.mkdir(parents=True, exist_ok=True)
+            log.info(f'OCR is done. Archiving {file_path.name} to {archive_path}')
             shutil.move(file_path, archive_path)
         else:
             log.info('OCR is done')
@@ -210,11 +318,29 @@ def main(
         ),
     ] = Path('/processed'),
     *,
+    output_structure: Annotated[
+        OutputStructure | None,
+        cyclopts.Parameter(
+            env_var='OCR_OUTPUT_STRUCTURE',
+            help='Layout of the output and archive directories: FLAT, YEAR_MONTH '
+            '(a YYYY/MM subdirectory), or HIERARCHY (mirror the input directory '
+            'tree)',
+        ),
+    ] = None,
+    on_conflict: Annotated[
+        ConflictPolicy,
+        cyclopts.Parameter(
+            env_var='OCR_ON_CONFLICT',
+            help='What to do when the destination file already exists: SKIP, '
+            'OVERWRITE, or SUFFIX (write "name (1).pdf" instead)',
+        ),
+    ] = ConflictPolicy.SUFFIX,
     output_dir_year_month: Annotated[
         bool,
         cyclopts.Parameter(
             env_var='OCR_OUTPUT_DIRECTORY_YEAR_MONTH',
-            help='Create a subdirectory in the output directory for each year/month',
+            help='(deprecated) Create a subdirectory in the output directory for '
+            'each year/month; use --output-structure YEAR_MONTH instead',
         ),
     ] = False,
     on_success_delete: Annotated[
@@ -290,18 +416,37 @@ def main(
         manage_root_logger=True,
     )
     log.setLevel(loglevel.value)
+
+    # Resolve the legacy boolean into the structure enum. Logging is configured
+    # by now, so the deprecation notice reaches the ordinary startup log.
+    if output_structure is None:
+        if output_dir_year_month:
+            log.warning(
+                "OCR_OUTPUT_DIRECTORY_YEAR_MONTH is deprecated; use "
+                "OCR_OUTPUT_STRUCTURE=YEAR_MONTH instead"
+            )
+            output_structure = OutputStructure.YEAR_MONTH
+        else:
+            output_structure = OutputStructure.FLAT
+    elif output_dir_year_month:
+        log.warning(
+            "OCR_OUTPUT_DIRECTORY_YEAR_MONTH is deprecated and is ignored "
+            "because OCR_OUTPUT_STRUCTURE is set"
+        )
+
     log.info(
         f"Starting OCRmyPDF watcher with config:\n"
         f"Input Directory: {input_dir}\n"
         f"Output Directory: {output_dir}\n"
-        f"Output Directory Year & Month: {output_dir_year_month}\n"
+        f"Output Structure: {output_structure.value}\n"
         f"Archive Directory: {archive_dir}"
     )
     log.info(
         f"INPUT_DIRECTORY: {input_dir}\n"
         f"OUTPUT_DIRECTORY: {output_dir}\n"
         f"ARCHIVE_DIRECTORY: {archive_dir}\n"
-        f"OUTPUT_DIRECTORY_YEAR_MONTH: {output_dir_year_month}\n"
+        f"OUTPUT_STRUCTURE: {output_structure.value}\n"
+        f"ON_CONFLICT: {on_conflict.value}\n"
         f"ON_SUCCESS_DELETE: {on_success_delete}\n"
         f"ON_SUCCESS_ARCHIVE: {on_success_archive}\n"
         f"DESKEW: {deskew}\n"
@@ -356,7 +501,8 @@ def main(
         'on_success_archive': on_success_archive,
         'poll_new_file_seconds': poll_new_file_seconds,
         'retries_loading_file': retries_loading_file,
-        'output_dir_year_month': output_dir_year_month,
+        'output_structure': output_structure,
+        'on_conflict': on_conflict,
     }
 
     print(f"Watching {input_dir} for new PDFs. Press Ctrl+C to exit.")
