@@ -12,6 +12,7 @@ from ocrmypdf.imageops import (
     bytes_per_pixel,
     calculate_downsample,
     downsample_image,
+    has_decoded_pixels,
 )
 
 
@@ -56,3 +57,30 @@ def test_downsample_image():
     ds = downsample_image(im, (50, 50))
     assert ds.size == (50, 50)
     assert ds.info['dpi'] == (150, 150)
+
+
+def test_has_decoded_pixels_tracks_pillow_lazy_load(resources):
+    """Pin the private Pillow attribute has_decoded_pixels() depends on.
+
+    If a future Pillow renames it, this fails loudly instead of the pipeline
+    quietly deciding that no image ever needs to be written.
+    """
+    im = Image.open(resources / 'baiona.png')
+    assert not has_decoded_pixels(im), "Image.open() must not decode"
+    assert im.size and im.mode, "reading the header must not decode either"
+    assert not has_decoded_pixels(im)
+    im.load()
+    assert has_decoded_pixels(im)
+
+
+def test_has_decoded_pixels_true_for_images_made_in_memory():
+    assert has_decoded_pixels(Image.new('L', (4, 4)))
+
+
+def test_has_decoded_pixels_assumes_decoded_if_pillow_changes(monkeypatch):
+    """A Pillow that drops the attribute must cost work, never correctness."""
+
+    class Opaque:
+        pass
+
+    assert has_decoded_pixels(Opaque())  # type: ignore[arg-type]

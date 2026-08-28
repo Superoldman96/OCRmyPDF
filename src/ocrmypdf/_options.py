@@ -234,6 +234,7 @@ class OcrOptions(BaseModel):
 
     # Advanced options
     max_image_mpixels: Annotated[float | None, Field(ge=0)] = None
+    max_ocr_image_mpixels: Annotated[float | None, Field(gt=0)] = None
     pdf_renderer: PdfRenderer = 'auto'
     ocr_engine: str = 'auto'
     rasterizer: Rasterizer = 'auto'

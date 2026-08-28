@@ -59,6 +59,7 @@ from ocrmypdf.exceptions import ExitCode, ExitCodeException
 from ocrmypdf.helpers import (
     check_pdf,
     pikepdf_enable_mmap,
+    release_free_memory,
     running_in_docker,
     running_in_snap,
     samefile,
@@ -335,7 +336,7 @@ def setup_pipeline(
     if options.max_image_mpixels is not None:
         PIL.Image.MAX_IMAGE_PIXELS = int(options.max_image_mpixels * 1_000_000)
         if PIL.Image.MAX_IMAGE_PIXELS == 0:
-            PIL.Image.MAX_IMAGE_PIXELS = None  # type: ignore
+            PIL.Image.MAX_IMAGE_PIXELS = None
 
     pikepdf_enable_mmap()
     executor = setup_executor(plugin_manager)
@@ -473,6 +474,11 @@ def process_page(page_context: PageContext) -> tuple[Path, Path | None, int]:
         pdf_page_from_image_out = create_pdf_page_from_image(
             visible_image_out, page_context, orientation_correction
         )
+
+    # Every page image we needed is now on disk. Hand the memory back before the
+    # caller starts the OCR engine, whose own peak would otherwise stack on top
+    # of buffers we have finished with.
+    release_free_memory()
     return ocr_image_out, pdf_page_from_image_out, orientation_correction
 
 

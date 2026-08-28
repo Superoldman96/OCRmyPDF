@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -159,3 +160,51 @@ def test_resolution():
     assert dpi_100 == Resolution(100, 100)
     assert str(dpi_100) != str(dpi_200)
     assert dpi_100.take_max([200, 300], [400]) == Resolution(300, 400)
+
+
+def test_release_free_memory_is_harmless():
+    # Whether or not this platform has glibc, calling it must always be safe.
+    helpers.release_free_memory()
+    helpers.release_free_memory()
+
+
+def test_release_free_memory_no_op_without_glibc(monkeypatch):
+    monkeypatch.setattr(helpers, '_malloc_trim', lambda: None)
+    helpers.release_free_memory()
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason="glibc only")
+def test_release_free_memory_calls_malloc_trim(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, '_malloc_trim', lambda: calls.append)
+    helpers.release_free_memory()
+    assert calls == [0], "malloc_trim must be called with a zero pad argument"
+
+
+@pytest.fixture
+def uncached_malloc_trim():
+    """_malloc_trim() memoizes its answer; let each test resolve it afresh."""
+    helpers._malloc_trim.cache_clear()
+    yield
+    helpers._malloc_trim.cache_clear()
+
+
+def test_malloc_trim_absent_off_linux(monkeypatch, uncached_malloc_trim):
+    monkeypatch.setattr(helpers.sys, 'platform', 'win32')
+    assert helpers._malloc_trim() is None
+
+
+def test_malloc_trim_absent_without_glibc(monkeypatch, uncached_malloc_trim):
+    """Musl and friends have no libc.so.6 to load."""
+    monkeypatch.setattr(helpers.sys, 'platform', 'linux')
+
+    def no_libc(*args, **kwargs):
+        raise OSError("libc.so.6: cannot open shared object file")
+
+    monkeypatch.setattr(helpers.ctypes, 'CDLL', no_libc)
+    assert helpers._malloc_trim() is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason="glibc only")
+def test_malloc_trim_found_on_glibc(uncached_malloc_trim):
+    assert callable(helpers._malloc_trim())

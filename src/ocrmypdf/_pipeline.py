@@ -44,6 +44,11 @@ from ocrmypdf.exceptions import (
     UnsupportedImageFormatError,
 )
 from ocrmypdf.helpers import IMG2PDF_KWARGS, Resolution, safe_symlink
+from ocrmypdf.imageops import (
+    calculate_downsample,
+    downsample_image,
+    has_decoded_pixels,
+)
 from ocrmypdf.pdfa import (
     file_claims_pdfa,
     find_nonembedded_cid_fonts,
@@ -656,7 +661,7 @@ def preprocess_deskew(input_file: Path, page_context: PageContext) -> Path:
         deskewed = im.rotate(
             deskew_angle_degrees,
             resample=Image.Resampling.BICUBIC,
-            fillcolor=ImageColor.getcolor('white', mode=im.mode),  # type: ignore
+            fillcolor=ImageColor.getcolor('white', mode=im.mode),
         )
         deskewed.save(output_file, dpi=dpi)
 
@@ -687,6 +692,25 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
     with Image.open(image) as im:
         log.debug('resolution %r', im.info['dpi'])
 
+        if options.max_ocr_image_mpixels:
+            # Bound the memory this page costs from here on. Everything
+            # downstream -- masking, the PNG we write, and the OCR engine's own
+            # buffers -- scales with the pixel count, and the OCR engine
+            # dominates it. Downsampling adjusts the DPI to match, so the
+            # recognized text still lands in the right place on the page.
+            size = calculate_downsample(
+                im, max_pixels=round(options.max_ocr_image_mpixels * 1_000_000)
+            )
+            if size != im.size:
+                log.info(
+                    "Downsampling image for OCR from %d x %d to %d x %d to stay "
+                    "within --max-ocr-image-mpixels; the visible page is "
+                    "unaffected",
+                    *im.size,
+                    *size,
+                )
+                im = downsample_image(im, size)
+
         if options.mode != ProcessingMode.force:
             # Do not mask text areas when forcing OCR, because we need to OCR
             # all text areas
@@ -694,7 +718,7 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
             if options.mode == ProcessingMode.redo:
                 mask = True  # Mask visible text, but not invisible text
 
-            draw = ImageDraw.ImageDraw(im)
+            draw = None
             for textarea in page_context.pageinfo.get_textareas(
                 visible=mask, corrupt=None
             ):
@@ -710,14 +734,26 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
                     im.height - bbox[1] * xyscale[1],
                 )
                 log.debug('blanking %r', pixcoords)
+                if draw is None:
+                    # Constructing the drawing context decodes the image, so wait
+                    # until we know there is something to blank.
+                    draw = ImageDraw.ImageDraw(im)
                 draw.rectangle(pixcoords, fill='white')
                 # draw.rectangle(pixcoords, outline='pink')
 
         filter_im = page_context.plugin_manager.filter_ocr_image(
             page=page_context, image=im
         )
-        if filter_im is not None:
+        if filter_im is not None and filter_im is not im:
             im = filter_im
+        elif not has_decoded_pixels(im):
+            # Nothing read or wrote a pixel: no masking was needed, and no filter
+            # replaced or touched the image. Re-encoding it would reproduce the
+            # file we already have, which on a large page costs seconds of CPU and
+            # a full-size buffer, so link to it instead.
+            log.debug("OCR image needs no changes, linking to %s", image)
+            safe_symlink(image, output_file)
+            return output_file
 
         # Pillow requires integer DPI
         dpi = tuple(round(coord) for coord in im.info['dpi'])

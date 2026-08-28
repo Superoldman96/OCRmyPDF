@@ -298,6 +298,13 @@ def filter_ocr_image(page: PageContext, image: Image.Image) -> Image.Image:  # t
     The built-in Tesseract OCR engine uses this hook itself to downsample
     very large images to fit its constraints.
 
+    The image is handed over undecoded. If your hook neither replaces it nor
+    reads its pixels, OCRmyPDF can prove the file on disk is already the image
+    OCR needs and will skip re-encoding it, which is worth seconds on a large
+    page. Reading or modifying pixels decodes the image and OCRmyPDF writes it
+    out as before, so either style is correct -- returning ``image`` untouched is
+    simply cheaper than it used to be.
+
     Note:
         This hook will be called from child processes. Modifying global state
         will not affect the main process or other child processes.

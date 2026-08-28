@@ -8,6 +8,8 @@ from __future__ import annotations
 import PIL.Image
 import pytest
 
+from ocrmypdf.exceptions import ExitCode
+
 from .conftest import preserve_pil_max_image_pixels, run_ocrmypdf_api
 
 
@@ -26,6 +28,15 @@ def test_max_image_pixels_restored_between_tests():
         assert saved == PIL.Image.MAX_IMAGE_PIXELS
     finally:
         PIL.Image.MAX_IMAGE_PIXELS = saved
+
+
+def test_max_image_mpixels_zero_means_unlimited(resources, outpdf, caplog):
+    # 0 disables Pillow's limit entirely, where 1 would reject this 8.4 MP page.
+    assert (
+        run_ocrmypdf_api(resources / 'ccitt.pdf', outpdf, '--max-image-mpixels', '0')
+        == ExitCode.ok
+    )
+    assert 'decompression bomb' not in caplog.text
 
 
 def test_decompression_bomb_error(resources, outpdf, caplog):

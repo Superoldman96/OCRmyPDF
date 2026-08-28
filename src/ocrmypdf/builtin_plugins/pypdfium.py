@@ -17,7 +17,7 @@ else:
         import pypdfium2 as pdfium
     except ImportError:
         pdfium = None
-from PIL import Image
+from PIL import Image, ImageColor
 
 from ocrmypdf import hookimpl
 from ocrmypdf.exceptions import MissingDependencyError
@@ -119,6 +119,92 @@ def _render_page_to_bitmap(
     return bitmap, expected_width, expected_height
 
 
+# PIL image mode to build from each PDFium bitmap format. PDFium hands back
+# little-endian pixels, so its BGR* formats are read with a matching raw decoder.
+_BITMAP_MODE_TO_PIL = {
+    'L': 'L',
+    'BGR': 'RGB',
+    'RGB': 'RGB',
+    'BGRA': 'RGBA',
+    'RGBA': 'RGBA',
+    'BGRX': 'RGBX',
+    'RGBX': 'RGBX',
+}
+
+
+def _bitmap_to_pil(
+    bitmap: pdfium.PdfBitmap,
+    expected_width: int | None,
+    expected_height: int | None,
+) -> Image.Image:
+    """Copy a PDFium bitmap into a PIL image, trimming any rounding overshoot.
+
+    PDFium's rendered size can exceed the size implied by the page dimensions and
+    DPI by a pixel or two of rounding. Trimming while the pixels are copied out of
+    PDFium is free -- the raw decoder walks the buffer a row at a time, so a
+    narrower width just skips the tail of each row and a shorter height stops
+    early. Correcting the size after the fact would instead allocate a third
+    full-page buffer alongside the bitmap and the image copied out of it, which on
+    a large page costs hundreds of megabytes.
+
+    The returned image always owns its pixels. ``PdfBitmap.to_pil()`` lets PIL
+    alias the bitmap's buffer for some formats -- grayscale renders among them --
+    and PDFium frees that buffer when the bitmap is closed, so the caller must be
+    able to close the bitmap without invalidating the image.
+    """
+    width, height = bitmap.width, bitmap.height
+    if expected_width and expected_height:
+        # Only trim overshoot; a shortfall is padded later, once the mode is known.
+        if 0 < width - expected_width <= 2:
+            width = expected_width
+        if 0 < height - expected_height <= 2:
+            height = expected_height
+
+    mode = _BITMAP_MODE_TO_PIL.get(bitmap.mode)
+    if mode is None:
+        # Unrecognized format: let pypdfium2 work it out, and copy so that we own
+        # the pixels even if it handed back a view on the bitmap's buffer.
+        return bitmap.to_pil().copy()
+
+    # frombytes() copies, unlike frombuffer(), which may alias bitmap.buffer.
+    return Image.frombytes(
+        mode, (width, height), bitmap.buffer, 'raw', bitmap.mode, bitmap.stride, 1
+    )
+
+
+def _white(mode: str) -> int | tuple[int, ...]:
+    """Return the value that represents white in the given PIL mode."""
+    if mode == '1':
+        return 1
+    if mode in ('L', 'P'):
+        return 255
+    if mode == 'RGB':
+        return (255, 255, 255)
+    if mode == 'RGBA':
+        return (255, 255, 255, 255)
+    return ImageColor.getcolor('white', mode)
+
+
+def _fit_to_size(image: Image.Image, width: int, height: int) -> Image.Image:
+    """Crop or white-pad an image to exactly ``width`` x ``height``.
+
+    PDFium's rendered size can disagree with the size implied by the page
+    dimensions and DPI by a pixel or two of rounding. Resampling the whole image
+    to erase that discrepancy costs a full extra buffer plus a scratch buffer for
+    the resampling filter -- on a 35 megapixel page that is hundreds of megabytes
+    of peak memory, and it softens every pixel in the image to correct an error of
+    a few thousandths of an inch. Copying the pixels into a canvas of the exact
+    size crops the excess and pads any shortfall with white instead, leaving the
+    pixels that survive untouched.
+    """
+    canvas = Image.new(image.mode, (width, height), _white(image.mode))
+    if image.palette is not None:
+        canvas.putpalette(image.palette)
+    canvas.paste(image, (0, 0))  # paste clips whatever falls outside the canvas
+    canvas.info = image.info.copy()
+    return canvas
+
+
 def _process_image_for_output(
     pil_image: Image.Image,
     raster_device: str,
@@ -135,7 +221,7 @@ def _process_image_for_output(
         width_diff = abs(actual_width - expected_width)
         height_diff = abs(actual_height - expected_height)
 
-        # Only resize if off by small amount (1-2 pixels)
+        # Only adjust if off by small amount (1-2 pixels)
         if (width_diff <= 2 or height_diff <= 2) and (
             width_diff > 0 or height_diff > 0
         ):
@@ -144,9 +230,7 @@ def _process_image_for_output(
                 f"{actual_width}x{actual_height} to expected "
                 f"{expected_width}x{expected_height}"
             )
-            pil_image = pil_image.resize(
-                (expected_width, expected_height), Image.Resampling.LANCZOS
-            )
+            pil_image = _fit_to_size(pil_image, expected_width, expected_height)
 
     # Set the DPI metadata if page_dpi is specified
     if page_dpi:
@@ -269,8 +353,9 @@ def rasterize_pdf_page(
             page, raster_device, raster_dpi, rotation, use_cropbox
         )
         with closing(bitmap):
-            # Convert to PIL Image
-            pil_image = bitmap.to_pil()
+            # Convert to PIL Image, which must own its pixels because closing the
+            # bitmap frees the buffer PIL would otherwise alias.
+            pil_image = _bitmap_to_pil(bitmap, expected_width, expected_height)
 
     # Process and save image outside the lock (PIL operations are thread-safe)
     pil_image, format_name = _process_image_for_output(

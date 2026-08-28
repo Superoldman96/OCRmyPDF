@@ -5,14 +5,17 @@
 
 from __future__ import annotations
 
+import ctypes
 import logging
 import multiprocessing
 import os
 import shutil
+import sys
 import warnings
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import suppress
 from decimal import Decimal
+from functools import cache
 from io import StringIO
 from math import isclose, isfinite
 from pathlib import Path
@@ -331,6 +334,35 @@ def pikepdf_enable_mmap() -> None:
         )
     except AttributeError:
         log.debug("pikepdf mmap not available")
+
+
+@cache
+def _malloc_trim() -> Callable[[int], int] | None:
+    """Resolve glibc's malloc_trim(), or None if this platform has no such thing."""
+    if not sys.platform.startswith('linux'):
+        return None
+    try:
+        return ctypes.CDLL('libc.so.6', use_errno=False).malloc_trim
+    except (OSError, AttributeError):
+        return None  # not glibc, e.g. musl
+
+
+def release_free_memory() -> None:
+    """Return heap memory we have already freed to the operating system.
+
+    glibc raises its mmap threshold as it sees large blocks freed, so after the
+    first few pages the multi-megabyte buffers Pillow uses for page images come
+    from the heap rather than from mmap. free() then leaves them in the arena,
+    where they count against our resident set but are of no use to anyone else --
+    including the OCR engine subprocess we are about to run, whose own peak adds
+    to whatever we are still holding. Measured on a 34 megapixel page, this is
+    the difference between a 752 MB and a 490 MB peak for the process tree.
+
+    Does nothing on platforms without glibc.
+    """
+    trim = _malloc_trim()
+    if trim is not None:
+        trim(0)
 
 
 def pikepdf_get_int(obj: pikepdf.Object, key: pikepdf.Name, default: int = 0) -> int:

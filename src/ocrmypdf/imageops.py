@@ -26,6 +26,23 @@ def bytes_per_pixel(mode: str) -> int:
     return 4
 
 
+def has_decoded_pixels(image: Image.Image) -> bool:
+    """Report whether an image's pixel data has been read into memory.
+
+    ``Image.open()`` parses the header and stops, so an image nobody has decoded
+    is still byte for byte the file it came from -- worth knowing when the
+    alternative is decoding and re-encoding it for no reason.
+
+    Pillow has no public predicate for this. ``Image.im`` does not report it
+    either: on an undecoded image the property raises rather than returning
+    ``None``, so we consult the private attribute it raises about. If a future
+    Pillow renames that attribute we report "decoded", which merely costs the
+    work we were trying to skip; ``test_imageops`` pins the behaviour so the
+    rename surfaces as a test failure rather than as a silently skipped write.
+    """
+    return getattr(image, '_im', True) is not None
+
+
 def _calculate_downsample(
     image_size: tuple[int, int],
     bytes_per_pixel: int,

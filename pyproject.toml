@@ -18,7 +18,8 @@ dependencies = [
   "pdfminer.six>=20260107",  # fixes parsing of tokens split across the read buffer/streams (gh #1361)
   "pi-heif",                # Heif image format - maintainers: if this is removed, it will NOT break
   "pikepdf>=10",
-  "Pillow>=10.0.1",
+  "Pillow>=12",                # imageops.has_decoded_pixels() reads Image._im,
+                              # whose shape settled in 11 and is pinned by tests
   "pluggy>=1",
   "pydantic>=2.12.5",
   "pypdfium2>=5.0.0",

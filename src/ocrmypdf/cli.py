@@ -405,6 +405,19 @@ Online documentation is located at:
         default=250.0,
     )
     advanced.add_argument(
+        '--max-ocr-image-mpixels',
+        action='store',
+        type=numeric(float, 0.0),
+        metavar='MPixels',
+        help="Downsample the image sent to OCR when it exceeds this many "
+        "megapixels, to bound the memory each page needs. The visible page is "
+        "never downsampled, so this trades OCR accuracy on very high resolution "
+        "scans for a predictable memory ceiling. Peak memory is roughly "
+        "(--jobs) x 16 bytes x (megapixels of the largest page). By default "
+        "OCR runs at the full resolution of the page.",
+        default=None,
+    )
+    advanced.add_argument(
         '--pdf-renderer',
         choices=['auto', 'hocr', 'sandwich', 'hocrdebug', 'fpdf2'],
         default='auto',
