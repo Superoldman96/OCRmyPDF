@@ -336,7 +336,7 @@ def setup_pipeline(
     if options.max_image_mpixels is not None:
         PIL.Image.MAX_IMAGE_PIXELS = int(options.max_image_mpixels * 1_000_000)
         if PIL.Image.MAX_IMAGE_PIXELS == 0:
-            PIL.Image.MAX_IMAGE_PIXELS = None  # type: ignore
+            PIL.Image.MAX_IMAGE_PIXELS = None
 
     pikepdf_enable_mmap()
     executor = setup_executor(plugin_manager)

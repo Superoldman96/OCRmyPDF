@@ -182,7 +182,7 @@ def _white(mode: str) -> int | tuple[int, ...]:
         return (255, 255, 255)
     if mode == 'RGBA':
         return (255, 255, 255, 255)
-    return ImageColor.getcolor('white', mode)  # type: ignore[return-value]
+    return ImageColor.getcolor('white', mode)
 
 
 def _fit_to_size(image: Image.Image, width: int, height: int) -> Image.Image:
