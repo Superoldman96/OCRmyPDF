@@ -68,7 +68,7 @@ class TestRasterizerOption:
 
     def test_rasterizer_invalid(self):
         """Test that an invalid rasterizer value is rejected."""
-        with pytest.raises(ValueError, match="rasterizer must be one of"):
+        with pytest.raises(ValueError, match=r"rasterizer\n.*Input should be"):
             OcrOptions(
                 input_file='test.pdf', output_file='out.pdf', rasterizer='invalid'
             )

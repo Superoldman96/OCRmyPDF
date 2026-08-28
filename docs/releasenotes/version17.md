@@ -115,6 +115,15 @@
   `/Pages` node, rather than only looking at the page's own resources.
 - A text layer that becomes empty after stripping is now removed from the page
   instead of being left behind as a vestigial Form XObject husk.
+- Setting `clean_final` on an existing options object in the Python API no
+  longer leaves `clean` unset. `--clean-final` implies `--clean`, but the rule
+  lived in a field validator that only ran while the options object was being
+  constructed, so assigning to the attribute afterwards silently skipped it.
+- Validation errors for out-of-range or misspelled options now name the option
+  they are about, and their wording comes from Pydantic rather than being
+  hand-written, so it has changed slightly. For example, `--jobs 999` now
+  reports `--jobs: Input should be less than or equal to 256`. The set of
+  accepted values is unchanged.
 
 ## v17.10.0
 

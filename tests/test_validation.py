@@ -102,13 +102,31 @@ def test_optimizing_jpeg_quality_warns(caplog):
     assert 'will be ignored because' in caplog.text
 
 
+def test_clean_final_implies_clean():
+    """--clean-final implies --clean, however clean_final comes to be set."""
+    assert make_ocr_opts(clean_final=True).clean
+
+    # Setting it by assignment must propagate too; this previously did not,
+    # because the rule lived in a field validator that mutated ValidationInfo.
+    opts = make_ocr_opts()
+    assert not opts.clean
+    opts.clean_final = True
+    assert opts.clean
+
+    # No implication in the other direction, and nothing is forced on by default
+    assert not make_ocr_opts().clean_final
+    assert not make_ocr_opts(clean=True).clean_final
+
+
 def test_pillow_options():
     # Test that max_image_mpixels=0 is valid (validation now in OcrOptions)
     opts = make_ocr_opts(max_image_mpixels=0)
     assert opts.max_image_mpixels == 0
 
     # Test that negative values are rejected
-    with pytest.raises(ValueError, match="max_image_mpixels must be non-negative"):
+    with pytest.raises(
+        ValueError, match=r"max_image_mpixels\n.*greater than or equal to 0"
+    ):
         make_ocr_opts(max_image_mpixels=-1)
 
     # Default is None, meaning "do not override host-set PIL.Image.MAX_IMAGE_PIXELS"

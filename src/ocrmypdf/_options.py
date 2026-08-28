@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from enum import StrEnum
 from io import IOBase
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Annotated, Any, BinaryIO, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -32,6 +32,14 @@ log = logging.getLogger(__name__)
 _plugin_option_models: dict[str, type[BaseModel]] = {}
 
 PathOrIO = BinaryIO | IOBase | Path | str | bytes
+
+OutputType = Literal['auto', 'pdfa', 'pdf', 'pdfa-1', 'pdfa-2', 'pdfa-3', 'none']
+
+# 'hocr' and 'hocrdebug' are removed renderers that are still accepted here and
+# redirected to 'fpdf2' later, by ValidationCoordinator.
+PdfRenderer = Literal['auto', 'sandwich', 'fpdf2', 'hocr', 'hocrdebug']
+
+Rasterizer = Literal['auto', 'ghostscript', 'pypdfium']
 
 
 class ProcessingMode(StrEnum):
@@ -155,7 +163,7 @@ class OcrOptions(BaseModel):
 
     # Core OCR options
     languages: list[str] = Field(default_factory=lambda: [DEFAULT_LANGUAGE])
-    output_type: str = 'auto'
+    output_type: OutputType = 'auto'
     mode: ProcessingMode = ProcessingMode.default
 
     # Backward compatibility properties for force_ocr, skip_text, redo_ocr
@@ -175,11 +183,11 @@ class OcrOptions(BaseModel):
         return self.mode == ProcessingMode.redo
 
     # Job control
-    jobs: int | None = None
+    jobs: Annotated[int | None, Field(ge=0, le=256)] = None
     use_threads: bool = True
     progress_bar: bool = True
     quiet: bool = False
-    verbose: int = 0
+    verbose: Annotated[int, Field(ge=0, le=2)] = 0
     keep_temporary_files: bool = False
 
     # Image processing
@@ -190,7 +198,7 @@ class OcrOptions(BaseModel):
     rotate_pages: bool = False
     remove_background: bool = False
     remove_vectors: bool = False
-    oversample: int = 0
+    oversample: Annotated[int, Field(ge=0, le=5000)] = 0
     unpaper_args: list[str] | None = None
 
     # OCR behavior
@@ -225,11 +233,13 @@ class OcrOptions(BaseModel):
     no_overwrite: bool = False
 
     # Advanced options
-    max_image_mpixels: float | None = None
-    pdf_renderer: str = 'auto'
+    max_image_mpixels: Annotated[float | None, Field(ge=0)] = None
+    pdf_renderer: PdfRenderer = 'auto'
     ocr_engine: str = 'auto'
-    rasterizer: str = 'auto'
-    rotate_pages_threshold: float = DEFAULT_ROTATE_PAGES_THRESHOLD
+    rasterizer: Rasterizer = 'auto'
+    rotate_pages_threshold: Annotated[float, Field(ge=0, le=1000)] = (
+        DEFAULT_ROTATE_PAGES_THRESHOLD
+    )
     user_words: os.PathLike | None = None
     user_patterns: os.PathLike | None = None
     fast_web_view: float = 1.0
@@ -266,84 +276,6 @@ class OcrOptions(BaseModel):
         """Ensure languages list is not empty."""
         if not v:
             return [DEFAULT_LANGUAGE]
-        return v
-
-    @field_validator('output_type')
-    @classmethod
-    def validate_output_type(cls, v):
-        """Validate output type is one of the allowed values."""
-        valid_types = {'auto', 'pdfa', 'pdf', 'pdfa-1', 'pdfa-2', 'pdfa-3', 'none'}
-        if v not in valid_types:
-            raise ValueError(f"output_type must be one of {valid_types}")
-        return v
-
-    @field_validator('pdf_renderer')
-    @classmethod
-    def validate_pdf_renderer(cls, v):
-        """Validate PDF renderer is one of the allowed values."""
-        valid_renderers = {'auto', 'sandwich', 'fpdf2'}
-        # Legacy hocr/hocrdebug are accepted but redirected to fpdf2
-        legacy_renderers = {'hocr', 'hocrdebug'}
-        all_accepted = valid_renderers | legacy_renderers
-        if v not in all_accepted:
-            raise ValueError(f"pdf_renderer must be one of {all_accepted}")
-        return v
-
-    @field_validator('rasterizer')
-    @classmethod
-    def validate_rasterizer(cls, v):
-        """Validate rasterizer is one of the allowed values."""
-        valid_rasterizers = {'auto', 'ghostscript', 'pypdfium'}
-        if v not in valid_rasterizers:
-            raise ValueError(f"rasterizer must be one of {valid_rasterizers}")
-        return v
-
-    @field_validator('clean_final')
-    @classmethod
-    def validate_clean_final(cls, v, info):
-        """If clean_final is True, also set clean to True."""
-        if v and hasattr(info, 'data') and 'clean' in info.data:
-            info.data['clean'] = True
-        return v
-
-    @field_validator('jobs')
-    @classmethod
-    def validate_jobs(cls, v):
-        """Validate jobs is a reasonable number."""
-        if v is not None and (v < 0 or v > 256):
-            raise ValueError("jobs must be between 0 and 256")
-        return v
-
-    @field_validator('verbose')
-    @classmethod
-    def validate_verbose(cls, v):
-        """Validate verbose level."""
-        if v < 0 or v > 2:
-            raise ValueError("verbose must be between 0 and 2")
-        return v
-
-    @field_validator('oversample')
-    @classmethod
-    def validate_oversample(cls, v):
-        """Validate oversample DPI."""
-        if v < 0 or v > 5000:
-            raise ValueError("oversample must be between 0 and 5000")
-        return v
-
-    @field_validator('max_image_mpixels')
-    @classmethod
-    def validate_max_image_mpixels(cls, v):
-        """Validate max image megapixels."""
-        if v is not None and v < 0:
-            raise ValueError("max_image_mpixels must be non-negative")
-        return v
-
-    @field_validator('rotate_pages_threshold')
-    @classmethod
-    def validate_rotate_pages_threshold(cls, v):
-        """Validate rotate pages threshold."""
-        if v < 0 or v > 1000:
-            raise ValueError("rotate_pages_threshold must be between 0 and 1000")
         return v
 
     @field_validator('title', 'author', 'keywords', 'subject')
@@ -442,6 +374,19 @@ class OcrOptions(BaseModel):
                 data['mode'] = expected_mode
 
         return data
+
+    @model_validator(mode='after')
+    def propagate_clean_final(self):
+        """Cleaning the final image implies cleaning the image sent to OCR.
+
+        This runs as an after-model validator rather than a field validator so
+        that it also applies when clean_final is set by assignment, which
+        validate_assignment=True routes back through here. The guard makes that
+        re-entry terminate.
+        """
+        if self.clean_final and not self.clean:
+            self.clean = True
+        return self
 
     @model_validator(mode='after')
     def validate_redo_ocr_options(self):
