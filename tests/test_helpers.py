@@ -179,3 +179,32 @@ def test_release_free_memory_calls_malloc_trim(monkeypatch):
     monkeypatch.setattr(helpers, '_malloc_trim', lambda: calls.append)
     helpers.release_free_memory()
     assert calls == [0], "malloc_trim must be called with a zero pad argument"
+
+
+@pytest.fixture
+def uncached_malloc_trim():
+    """_malloc_trim() memoizes its answer; let each test resolve it afresh."""
+    helpers._malloc_trim.cache_clear()
+    yield
+    helpers._malloc_trim.cache_clear()
+
+
+def test_malloc_trim_absent_off_linux(monkeypatch, uncached_malloc_trim):
+    monkeypatch.setattr(helpers.sys, 'platform', 'win32')
+    assert helpers._malloc_trim() is None
+
+
+def test_malloc_trim_absent_without_glibc(monkeypatch, uncached_malloc_trim):
+    """Musl and friends have no libc.so.6 to load."""
+    monkeypatch.setattr(helpers.sys, 'platform', 'linux')
+
+    def no_libc(*args, **kwargs):
+        raise OSError("libc.so.6: cannot open shared object file")
+
+    monkeypatch.setattr(helpers.ctypes, 'CDLL', no_libc)
+    assert helpers._malloc_trim() is None
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason="glibc only")
+def test_malloc_trim_found_on_glibc(uncached_malloc_trim):
+    assert callable(helpers._malloc_trim())

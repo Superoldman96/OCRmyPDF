@@ -15,7 +15,9 @@ from PIL import Image
 from ocrmypdf.builtin_plugins import pypdfium
 from ocrmypdf.builtin_plugins.pypdfium import (
     _bitmap_to_pil,
+    _fit_to_size,
     _process_image_for_output,
+    _white,
     check_options,
     rasterize_pdf_page,
 )
@@ -358,3 +360,57 @@ def test_bitmap_to_pil_trims_rounding_overshoot(resources, expected, result):
             )
             image = _bitmap_to_pil(bitmap, *want)
             assert image.size == (rendered if result is None else want)
+
+
+@pytest.mark.parametrize(
+    ('mode', 'expected'),
+    [
+        ('1', 1),
+        ('L', 255),
+        ('P', 255),
+        ('RGB', (255, 255, 255)),
+        ('RGBA', (255, 255, 255, 255)),
+        ('LA', (255, 255)),  # falls through to ImageColor
+        ('CMYK', (255, 255, 255)),  # ditto
+    ],
+)
+def test_white_for_every_mode_we_pad_with(mode, expected):
+    assert _white(mode) == expected
+
+
+@pytest.mark.parametrize(
+    ('target', 'description'),
+    [((4, 4), 'crop both axes'), ((12, 12), 'pad both axes'), ((4, 12), 'one of each')],
+)
+def test_fit_to_size_crops_and_pads_without_resampling(target, description):
+    image = Image.new('L', (8, 8), 0)
+    out = _fit_to_size(image, *target)
+    assert out.size == target, description
+    # Surviving pixels keep their value; anything added is white.
+    assert out.getpixel((0, 0)) == 0
+    if target[1] > 8:
+        assert out.getpixel((0, 11)) == 255, "padding must be white, not black"
+
+
+def test_fit_to_size_keeps_the_palette():
+    image = Image.new('P', (8, 8), 3)
+    image.putpalette([0, 0, 0] * 3 + [10, 20, 30] + [0, 0, 0] * 252)
+    out = _fit_to_size(image, 6, 6)
+    assert out.mode == 'P'
+    assert out.convert('RGB').getpixel((0, 0)) == (10, 20, 30)
+
+
+def test_bitmap_to_pil_falls_back_for_an_unknown_format():
+    """A PDFium format we do not map is handed to pypdfium2, and still copied."""
+    source = Image.new('RGB', (4, 4), 'red')
+
+    class UnknownBitmap:
+        mode = 'no-such-format'
+        width = height = 4
+
+        def to_pil(self):
+            return source
+
+    out = _bitmap_to_pil(UnknownBitmap(), None, None)
+    assert out.size == (4, 4)
+    assert out is not source, "must copy: pypdfium2 may return a view on the buffer"
