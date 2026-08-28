@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import multiprocessing
 import os
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -159,3 +160,22 @@ def test_resolution():
     assert dpi_100 == Resolution(100, 100)
     assert str(dpi_100) != str(dpi_200)
     assert dpi_100.take_max([200, 300], [400]) == Resolution(300, 400)
+
+
+def test_release_free_memory_is_harmless():
+    # Whether or not this platform has glibc, calling it must always be safe.
+    helpers.release_free_memory()
+    helpers.release_free_memory()
+
+
+def test_release_free_memory_no_op_without_glibc(monkeypatch):
+    monkeypatch.setattr(helpers, '_malloc_trim', lambda: None)
+    helpers.release_free_memory()
+
+
+@pytest.mark.skipif(not sys.platform.startswith('linux'), reason="glibc only")
+def test_release_free_memory_calls_malloc_trim(monkeypatch):
+    calls = []
+    monkeypatch.setattr(helpers, '_malloc_trim', lambda: calls.append)
+    helpers.release_free_memory()
+    assert calls == [0], "malloc_trim must be called with a zero pad argument"
