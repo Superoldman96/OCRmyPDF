@@ -511,7 +511,19 @@ def test_watcher_rejects_plugin_in_data_dir(data_dirs, watcher_log):
 def test_watcher_skips_fifo_input(data_dirs, watcher_log, resources):
     input_dir, output_dir, processed_dir, work_dir = data_dirs
 
-    proc = _spawn_watcher(input_dir, output_dir, processed_dir, work_dir, watcher_log)
+    # Poll, because the native backend is not guaranteed to see a fifo appear:
+    # macOS FSEvents reports the creation of a directory or a regular file but
+    # not of a fifo, so the event would never arrive and the watcher would never
+    # get the chance to reject it. Polling compares directory listings, so it
+    # surfaces every new entry whatever its type.
+    proc = _spawn_watcher(
+        input_dir,
+        output_dir,
+        processed_dir,
+        work_dir,
+        watcher_log,
+        env_extra={'OCR_USE_POLLING': '1'},
+    )
     _wait_for_watch_live(input_dir, watcher_log)
 
     # A fifo named like a PDF must be ignored, not OCR'd or crash the watcher.
