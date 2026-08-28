@@ -44,7 +44,11 @@ from ocrmypdf.exceptions import (
     UnsupportedImageFormatError,
 )
 from ocrmypdf.helpers import IMG2PDF_KWARGS, Resolution, safe_symlink
-from ocrmypdf.imageops import calculate_downsample, downsample_image
+from ocrmypdf.imageops import (
+    calculate_downsample,
+    downsample_image,
+    has_decoded_pixels,
+)
 from ocrmypdf.pdfa import (
     file_claims_pdfa,
     find_nonembedded_cid_fonts,
@@ -714,7 +718,7 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
             if options.mode == ProcessingMode.redo:
                 mask = True  # Mask visible text, but not invisible text
 
-            draw = ImageDraw.ImageDraw(im)
+            draw = None
             for textarea in page_context.pageinfo.get_textareas(
                 visible=mask, corrupt=None
             ):
@@ -730,14 +734,26 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
                     im.height - bbox[1] * xyscale[1],
                 )
                 log.debug('blanking %r', pixcoords)
+                if draw is None:
+                    # Constructing the drawing context decodes the image, so wait
+                    # until we know there is something to blank.
+                    draw = ImageDraw.ImageDraw(im)
                 draw.rectangle(pixcoords, fill='white')
                 # draw.rectangle(pixcoords, outline='pink')
 
         filter_im = page_context.plugin_manager.filter_ocr_image(
             page=page_context, image=im
         )
-        if filter_im is not None:
+        if filter_im is not None and filter_im is not im:
             im = filter_im
+        elif not has_decoded_pixels(im):
+            # Nothing read or wrote a pixel: no masking was needed, and no filter
+            # replaced or touched the image. Re-encoding it would reproduce the
+            # file we already have, which on a large page costs seconds of CPU and
+            # a full-size buffer, so link to it instead.
+            log.debug("OCR image needs no changes, linking to %s", image)
+            safe_symlink(image, output_file)
+            return output_file
 
         # Pillow requires integer DPI
         dpi = tuple(round(coord) for coord in im.info['dpi'])

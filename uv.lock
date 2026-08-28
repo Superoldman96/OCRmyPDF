@@ -1651,7 +1651,7 @@ requires-dist = [
     { name = "pdfminer-six", specifier = ">=20260107" },
     { name = "pi-heif" },
     { name = "pikepdf", specifier = ">=10" },
-    { name = "pillow", specifier = ">=10.0.1" },
+    { name = "pillow", specifier = ">=12" },
     { name = "pluggy", specifier = ">=1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pypdfium2", specifier = ">=5.0.0" },

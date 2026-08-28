@@ -48,6 +48,16 @@
 
 **Performance**
 
+- The image sent to OCR is no longer decoded and re-encoded when nothing needs
+  to change it. On a page with no pre-existing text to mask and no filtering
+  plugin -- the ordinary case for a scanned document -- the rasterized page
+  already *is* the OCR image, so it is linked rather than rewritten. Producing
+  it was costing 3.3 seconds and a full-size buffer on a 34 megapixel page, out
+  of about 15 seconds for the whole file. Building the mask is now deferred
+  until a text area actually needs blanking, since that step is what forced the
+  decode. The minimum Pillow version is raised to 12, because deciding whether
+  anything decoded the image reads an attribute whose shape settled in Pillow 11
+  (`pi-heif` already required Pillow 11.1, so the effective floor barely moves).
 - Reduced peak memory on files with large images by about a third at default
   settings. On a 34 megapixel page the process tree peaked at 752 MB and now
   peaks at 492 MB. Two changes account for it: rasterizing a page no longer
