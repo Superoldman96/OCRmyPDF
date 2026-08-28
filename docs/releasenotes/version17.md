@@ -7,6 +7,13 @@
 
 **Enhancements**
 
+- New `--max-ocr-image-mpixels` downsamples the image sent to OCR when a page
+  exceeds the given size, which bounds the largest consumer of memory. The
+  visible page is never downsampled, so output appearance is unaffected in every
+  mode; what it trades is OCR accuracy on very high resolution scans. A 34
+  megapixel page that peaks at 492 MB peaks at 325 MB under
+  `--max-ocr-image-mpixels 8`, and recognizes the same text. See the "Memory"
+  section of the performance documentation for how to size a memory limit.
 - `watcher.py` (the `watcher` extra) gained a configurable output layout and
   conflict policy. These are watcher-only changes; they do not affect the
   `ocrmypdf` library API.
@@ -41,6 +48,14 @@
 
 **Performance**
 
+- Reduced peak memory on files with large images by about a third at default
+  settings. On a 34 megapixel page the process tree peaked at 752 MB and now
+  peaks at 492 MB. Two changes account for it: rasterizing a page no longer
+  allocates a third full-page buffer to correct PDFium's rounding of the
+  rendered size by a pixel or two, and freed heap memory is now returned to the
+  operating system before the OCR engine runs, instead of counting against our
+  resident set for as long as the engine is working. Rasterization is also
+  faster, since correcting the size no longer resamples the whole page.
 - Several OCR jobs may now run concurrently in a single Python process. The API
   previously held a lock for the whole duration of `ocrmypdf.ocr()`, so a second
   call in another thread had to wait for the first to finish. Plugin state is
@@ -94,6 +109,10 @@
 
 **Fixes**
 
+- Fixed a latent use-after-free in the pypdfium2 rasterizer. `to_pil()` lets
+  Pillow alias PDFium's bitmap buffer for some formats -- grayscale renders
+  among them, which is every mono and grayscale page -- and the buffer was freed
+  immediately afterwards, leaving Pillow reading memory PDFium had released.
 - Windows: OCRmyPDF no longer prints `[WinError 2] The system cannot find the
   file specified` warnings while it searches for Ghostscript and Tesseract
   ([#1671](https://github.com/ocrmypdf/OCRmyPDF/discussions/1671)). These

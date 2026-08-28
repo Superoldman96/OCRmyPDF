@@ -226,6 +226,7 @@ class OcrOptions(BaseModel):
 
     # Advanced options
     max_image_mpixels: float | None = None
+    max_ocr_image_mpixels: float | None = None
     pdf_renderer: str = 'auto'
     ocr_engine: str = 'auto'
     rasterizer: str = 'auto'
@@ -336,6 +337,14 @@ class OcrOptions(BaseModel):
         """Validate max image megapixels."""
         if v is not None and v < 0:
             raise ValueError("max_image_mpixels must be non-negative")
+        return v
+
+    @field_validator('max_ocr_image_mpixels')
+    @classmethod
+    def validate_max_ocr_image_mpixels(cls, v):
+        """Validate max OCR image megapixels."""
+        if v is not None and v <= 0:
+            raise ValueError("max_ocr_image_mpixels must be positive")
         return v
 
     @field_validator('rotate_pages_threshold')

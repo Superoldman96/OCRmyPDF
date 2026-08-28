@@ -44,6 +44,7 @@ from ocrmypdf.exceptions import (
     UnsupportedImageFormatError,
 )
 from ocrmypdf.helpers import IMG2PDF_KWARGS, Resolution, safe_symlink
+from ocrmypdf.imageops import calculate_downsample, downsample_image
 from ocrmypdf.pdfa import (
     file_claims_pdfa,
     find_nonembedded_cid_fonts,
@@ -686,6 +687,25 @@ def create_ocr_image(image: Path, page_context: PageContext) -> Path:
     im: Image.Image
     with Image.open(image) as im:
         log.debug('resolution %r', im.info['dpi'])
+
+        if options.max_ocr_image_mpixels:
+            # Bound the memory this page costs from here on. Everything
+            # downstream -- masking, the PNG we write, and the OCR engine's own
+            # buffers -- scales with the pixel count, and the OCR engine
+            # dominates it. Downsampling adjusts the DPI to match, so the
+            # recognized text still lands in the right place on the page.
+            size = calculate_downsample(
+                im, max_pixels=round(options.max_ocr_image_mpixels * 1_000_000)
+            )
+            if size != im.size:
+                log.info(
+                    "Downsampling image for OCR from %d x %d to %d x %d to stay "
+                    "within --max-ocr-image-mpixels; the visible page is "
+                    "unaffected",
+                    *im.size,
+                    *size,
+                )
+                im = downsample_image(im, size)
 
         if options.mode != ProcessingMode.force:
             # Do not mask text areas when forcing OCR, because we need to OCR
