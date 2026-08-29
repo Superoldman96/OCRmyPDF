@@ -134,6 +134,26 @@ class ValidationCoordinator:
                 "--output-type is one of 'pdfa', 'pdfa-1', or 'pdfa-2'"
             )
 
+        # Validate options that depend on OCR engine detection. Skew and
+        # orientation are measured by the OCR engine, and the null engine
+        # measures neither, so these options silently do nothing.
+        if options.ocr_engine == 'none':
+            inert = sorted(
+                name
+                for name, value in {
+                    '--deskew': options.deskew,
+                    '--rotate-pages': options.rotate_pages,
+                }.items()
+                if value
+            )
+            if inert:
+                log.warning(
+                    f"{', '.join(inert)} will have no effect because "
+                    "--ocr-engine none does not detect page skew or "
+                    "orientation. Other image processing options are "
+                    "unaffected."
+                )
+
     def _handle_deprecated_pdf_renderer(self, options: OcrOptions) -> None:
         """Handle deprecated pdf_renderer values by redirecting to fpdf2."""
         if options.pdf_renderer in ('hocr', 'hocrdebug'):

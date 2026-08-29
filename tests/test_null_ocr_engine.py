@@ -167,3 +167,62 @@ class TestOcrEngineOption:
                 assert 'auto' in action.choices
                 assert action.default == 'auto'
                 break
+
+
+class TestNullOcrEngineInertOptions:
+    """Warn about options the null engine cannot honor.
+
+    Skew and orientation are measured by the OCR engine, and NullOcrEngine
+    measures neither, so --deskew and --rotate-pages are silently inert under
+    --ocr-engine none.
+    """
+
+    @staticmethod
+    def _warnings(caplog, **kwargs) -> list[str]:
+        import logging
+
+        from ocrmypdf._options import OcrOptions
+        from ocrmypdf._validation_coordinator import ValidationCoordinator
+        from ocrmypdf.api import setup_plugin_infrastructure
+
+        setup_plugin_infrastructure()
+        options = OcrOptions(
+            input_file=Path('in.pdf'), output_file=Path('out.pdf'), **kwargs
+        )
+        caplog.clear()
+        with caplog.at_level(
+            logging.WARNING, logger='ocrmypdf._validation_coordinator'
+        ):
+            ValidationCoordinator(MagicMock())._validate_cross_cutting_concerns(options)
+        return [record.getMessage() for record in caplog.records]
+
+    @pytest.mark.parametrize(
+        'kwargs, expected',
+        [
+            ({'deskew': True}, ['--deskew']),
+            ({'rotate_pages': True}, ['--rotate-pages']),
+            ({'deskew': True, 'rotate_pages': True}, ['--deskew', '--rotate-pages']),
+        ],
+    )
+    def test_warns_for_detection_dependent_options(self, caplog, kwargs, expected):
+        """--ocr-engine none should name every inert detection option."""
+        messages = self._warnings(caplog, ocr_engine='none', **kwargs)
+
+        assert len(messages) == 1
+        for option in expected:
+            assert option in messages[0]
+        for option in {'--deskew', '--rotate-pages'} - set(expected):
+            assert option not in messages[0]
+
+    def test_no_warning_without_the_inert_options(self, caplog):
+        """--ocr-engine none on its own is a supported, silent configuration."""
+        assert self._warnings(caplog, ocr_engine='none') == []
+
+    @pytest.mark.parametrize('engine', ['auto', 'tesseract'])
+    def test_no_warning_for_detecting_engines(self, caplog, engine):
+        """Engines that do detect skew/orientation must not be warned about."""
+        messages = self._warnings(
+            caplog, ocr_engine=engine, deskew=True, rotate_pages=True
+        )
+
+        assert messages == []
