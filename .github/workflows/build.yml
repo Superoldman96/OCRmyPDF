@@ -28,6 +28,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.x"
+          # Disabled because setup-uv keys its cache on the runner default Python
+          # rather than the matrix one, so all jobs collide on one ~100 KB cache.
+          enable-cache: false
 
       - name: "Set up Python"
         uses: actions/setup-python@v7
@@ -65,6 +68,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.x"
+          # Disabled because setup-uv keys its cache on the runner default Python
+          # rather than the matrix one, so all jobs collide on one ~100 KB cache.
+          enable-cache: false
 
       - name: "Set up Python"
         uses: actions/setup-python@v7
@@ -160,6 +166,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.x"
+          # Disabled because setup-uv keys its cache on the runner default Python
+          # rather than the matrix one, so all jobs collide on one ~100 KB cache.
+          enable-cache: false
 
       - name: "Set up Python"
         uses: actions/setup-python@v7
@@ -209,6 +218,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.x"
+          # Disabled because setup-uv keys its cache on the runner default Python
+          # rather than the matrix one, so all jobs collide on one ~100 KB cache.
+          enable-cache: false
 
       - name: "Set up Python"
         uses: actions/setup-python@v7
@@ -247,6 +259,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.x"
+          # Disabled because setup-uv keys its cache on the runner default Python
+          # rather than the matrix one, so all jobs collide on one ~100 KB cache.
+          enable-cache: false
 
       - name: Make wheels and sdist
         run: |
