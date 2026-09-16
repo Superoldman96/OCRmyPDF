@@ -158,18 +158,30 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Homebrew deps
-        continue-on-error: true
         run: |
-          brew update
-          brew install \
-            exempi \
-            ghostscript \
-            jbig2enc \
-            openjpeg \
-            pngquant \
-            poppler \
-            tesseract \
-            verapdf
+          # Fetching taps times out often enough to cost a macOS leg, so retry
+          # instead of pressing on: continue-on-error used to hide the failure
+          # until a later step died with "tesseract: command not found".
+          # A failed update is survivable on its own; a failed install is not.
+          for attempt in 1 2 3; do
+            brew update ||
+              echo "::warning::brew update failed (attempt $attempt), using taps as-is"
+            if brew install \
+                exempi \
+                ghostscript \
+                jbig2enc \
+                openjpeg \
+                pngquant \
+                poppler \
+                tesseract \
+                verapdf; then
+              exit 0
+            fi
+            echo "::warning::brew install failed (attempt $attempt of 3)"
+            sleep $((attempt * 15))
+          done
+          echo "::error::Homebrew dependencies could not be installed"
+          exit 1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
