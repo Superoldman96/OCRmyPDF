@@ -3,6 +3,17 @@
 
 # v17
 
+## v17.12.2
+
+**Fixes**
+
+- Some PDFs produced by LaTeX contain a malformed real number in a content
+  stream, such as `0.000-50131235`. Our PDF parser reads such a token as an
+  operator, which consumes the operands of the operator that follows it and
+  leaves, for example, a `cm` with too few operands. OCRmyPDF treated that as
+  an unreadable file and stopped. It now warns and carries on with the
+  graphics state it has, as PDF viewers do. {issue}`1054`
+
 ## v17.12.1
 
 **Fixes**

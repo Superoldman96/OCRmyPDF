@@ -13,7 +13,6 @@ from warnings import warn
 
 from pikepdf import Matrix, Name, Object, PdfInlineImage, parse_content_stream
 
-from ocrmypdf.exceptions import InputFileError
 from ocrmypdf.helpers import Resolution
 from ocrmypdf.pdfinfo._types import UNIT_SQUARE, Ink
 
@@ -200,11 +199,14 @@ def _interpret_contents(
         elif operator == 'cm':
             try:
                 ctm = Matrix(operands) @ ctm
-            except ValueError as e:
-                raise InputFileError(
-                    "PDF content stream is corrupt - this PDF is malformed. "
-                    "Use a PDF editor that is capable of visually inspecting the PDF."
-                ) from e
+            except ValueError:
+                # A 'cm' with the wrong number of operands means the content
+                # stream is malformed - typically a producer emitted a broken
+                # real number such as '0.000-50131235', which the parser reads
+                # as an operator that swallows the operands that precede it.
+                # Viewers tolerate this, so ignore the operator and carry on
+                # with the transformation matrix we have.
+                warn("PDF content stream has a malformed 'cm' - PDF may be malformed")
         elif operator == 'g':
             if vals := _operand_floats(operands):
                 fill_ink = _ink_from_components('gray', vals)
@@ -234,6 +236,9 @@ def _interpret_contents(
                 else:
                     fill_ink = _ink_from_components(space, vals)
         elif operator == 'Do':
+            if not operands:
+                warn("PDF content stream has a malformed 'Do' - PDF may be malformed")
+                continue
             image_name = operands[0]
             settings = XobjectSettings(
                 name=image_name,

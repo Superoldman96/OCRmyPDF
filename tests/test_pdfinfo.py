@@ -528,3 +528,34 @@ def test_imageinfo_ink_inherited_in_form_xobject(outdir):
     image = pdfinfo.PdfInfo(out)[0].images[0]
     assert image.type_ == 'stencil'
     assert image.ink is Ink.gray
+
+
+def test_malformed_number_token_issue1054():
+    """A malformed number in a content stream must not abort the scan.
+
+    Some PDF producers emit broken real numbers such as ``0.000-50131235``.
+    qpdf parses such a token as an operator, which steals the operands of the
+    operator that follows, leaving e.g. ``cm`` with the wrong operand count.
+    Viewers tolerate this, so we warn and ignore the operator rather than
+    declaring the whole file unreadable.
+    """
+    p = pikepdf.Pdf.new()
+
+    stream = pikepdf.Stream(
+        p, b'q 381 0 0 381 0 0 cm q 1.0 0 0 1.0 0 0.000-50131235 cm /Im0 Do Q Q'
+    )
+    with pytest.warns(UserWarning, match="malformed"):
+        info = _interpret_contents(stream)
+    # The outer cm survives; the inner malformed one is ignored
+    assert len(info.xobject_settings) == 1
+    assert info.xobject_settings[0].shorthand == (381, 0, 0, 381, 0, 0)
+
+
+def test_do_without_operand():
+    """A ``Do`` whose name operand was stolen must not raise."""
+    p = pikepdf.Pdf.new()
+
+    stream = pikepdf.Stream(p, b'q 1 0 0 1 0 0 cm 0.0-1 Do Q')
+    with pytest.warns(UserWarning, match="malformed"):
+        info = _interpret_contents(stream)
+    assert info.xobject_settings == []
