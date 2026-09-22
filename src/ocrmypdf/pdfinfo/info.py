@@ -49,35 +49,6 @@ def _box_rect(values: Iterable) -> FloatRect:
     return (b[0], b[1], b[2], b[3])
 
 
-def _page_has_text(text_blocks: Iterable[FloatRect], page_width, page_height) -> bool:
-    """Smarter text detection that ignores text in margins."""
-    pw, ph = float(page_width), float(page_height)  # pylint: disable=invalid-name
-
-    margin_ratio = 0.125
-    interior_bbox = (
-        margin_ratio * pw,  # left
-        (1 - margin_ratio) * ph,  # top
-        (1 - margin_ratio) * pw,  # right
-        margin_ratio * ph,  # bottom  (first quadrant: bottom < top)
-    )
-
-    def rects_intersect(a: FloatRect, b: FloatRect) -> bool:
-        """Check if two 4-tuple rects intersect.
-
-        Where (a,b) are 4-tuple rects (left-0, top-1, right-2, bottom-3)
-        https://stackoverflow.com/questions/306316/determine-if-two-rectangles-overlap-each-other
-        Formula assumes all boxes are in first quadrant.
-        """
-        return a[0] < b[2] and a[2] > b[0] and a[1] > b[3] and a[3] < b[1]
-
-    has_text = False
-    for bbox in text_blocks:
-        if rects_intersect(bbox, interior_bbox):
-            has_text = True
-            break
-    return has_text
-
-
 def simplify_textboxes(
     miner_page: LTPage, textbox_getter: Callable[[LTPage], Iterator[LTTextBox]]
 ) -> Iterator[TextboxInfo]:
@@ -179,12 +150,8 @@ class PageInfo:
                 )
             else:
                 self._textboxes = []
-            bboxes = (box.bbox for box in self._textboxes)
-
-            self._has_text = _page_has_text(bboxes, width_pt, height_pt)
         else:
             self._textboxes = []
-            self._has_text = None  # i.e. "no information"
 
         userunit = pikepdf_get_decimal(page.obj, Name.UserUnit, Decimal(1))
         self._userunit = userunit
