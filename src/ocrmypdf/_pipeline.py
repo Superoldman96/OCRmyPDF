@@ -1154,9 +1154,11 @@ def try_auto_pdfa(input_pdf: Path, context: PdfContext) -> tuple[Path, str]:
     Order of attempts, first success wins:
     1. Non-embedded CID fonts -> regular PDF (Ghostscript would corrupt them).
     2. Speculative conversion validated by verapdf (no Ghostscript).
-    3. Without verapdf, pass through if already PDF/A or rebuilt with force-ocr.
-    4. Ghostscript conversion (best-effort; failures fall through).
-    5. Regular PDF if none of the above produced PDF/A.
+    3. Without verapdf, pass through unchanged if the input already claims PDF/A.
+    4. Without verapdf, if force-ocr rebuilt the PDF from scratch, add the PDF/A
+       declarations speculatively and trust them without validation.
+    5. Ghostscript conversion (best-effort; failures fall through).
+    6. Regular PDF if none of the above produced PDF/A.
 
     Args:
         input_pdf: Path to the PDF to convert
@@ -1189,11 +1191,23 @@ def try_auto_pdfa(input_pdf: Path, context: PdfContext) -> tuple[Path, str]:
         if result is not None:
             return (result, 'pdfa')
         log.info('Auto mode: speculative PDF/A validation failed')
-    elif _is_safe_pdfa(input_pdf, context.options):
-        # No verapdf, but the input is already PDF/A or was rebuilt with
-        # --force-ocr, so we can pass it through without Ghostscript.
-        log.info('Auto mode: passing through as PDF/A (input already compliant)')
-        return (input_pdf, 'pdfa')
+    else:
+        # Without verapdf we cannot validate, but some cases are safe enough to
+        # trust: our modifications do not break PDF/A compliance.
+        if file_claims_pdfa(input_pdf)['pass']:
+            # The input already declares PDF/A and we only grafted text onto it.
+            log.info('Auto mode: passing through as PDF/A (input already compliant)')
+            return (input_pdf, 'pdfa')
+        if context.options.mode == ProcessingMode.force:
+            # force-ocr rewrote the entire PDF from scratch, so the content is
+            # PDF/A-clean; it only lacks the OutputIntent and XMP declarations.
+            declared = _declare_pdfa_unvalidated(input_pdf, context)
+            if declared is not None:
+                log.info(
+                    'Auto mode: added PDF/A declarations to the force-ocr rebuild '
+                    '(not validated - verapdf is not installed)'
+                )
+                return (declared, 'pdfa')
 
     # Fall back to Ghostscript to produce real PDF/A (v16 behavior). Best-effort:
     # if Ghostscript is unavailable or cannot safely produce PDF/A, keep a
@@ -1207,27 +1221,33 @@ def try_auto_pdfa(input_pdf: Path, context: PdfContext) -> tuple[Path, str]:
     return (input_pdf, 'pdf')
 
 
-def _is_safe_pdfa(input_pdf: Path, options) -> bool:
-    """Check if file can be considered PDF/A without validation.
+def _declare_pdfa_unvalidated(input_pdf: Path, context: PdfContext) -> Path | None:
+    """Add PDF/A declarations to a PDF without validating the result.
 
-    These are cases where our modifications don't break PDF/A compliance:
-    1. Input already claims PDF/A (we just grafted OCR text onto it)
-    2. We used force-ocr (we rewrote the entire PDF from scratch)
+    Used in 'auto' mode when verapdf is unavailable and the PDF was rebuilt
+    from scratch by force mode: the content is already PDF/A-clean, so only the
+    sRGB OutputIntent and the pdfaid XMP metadata are missing. This is much
+    faster than a Ghostscript round trip.
 
     Args:
-        input_pdf: Path to the PDF to check
-        options: OCR options
+        input_pdf: Path to the PDF to convert.
+        context: The PDF context.
 
     Returns:
-        True if file can safely be considered PDF/A
+        Path to the declared PDF/A file, or None if the conversion failed.
     """
-    # Safe if input already claims PDF/A
-    pdfa_status = file_claims_pdfa(input_pdf)
-    if pdfa_status['pass']:
-        return True
-
-    # Safe if we rewrote the PDF with force mode
-    return options.mode == ProcessingMode.force
+    gs_opts = getattr(context.options, 'ghostscript', None)
+    if gs_opts is not None and gs_opts.pdfa_image_compression != 'auto':
+        # Only Ghostscript can apply the requested image compression.
+        return None
+    output_file = context.get_path('speculative_pdfa.pdf')
+    try:
+        # 'auto' is not a PDF/A level; use the same default as Ghostscript
+        # conversion, PDF/A-2b.
+        return speculative_pdfa_conversion(input_pdf, output_file, 'pdfa-2')
+    except Exception as e:  # pylint: disable=broad-except
+        log.debug('Unvalidated PDF/A declaration failed: %s', e)
+        return None
 
 
 def should_linearize(working_file: Path, context: PdfContext) -> bool:

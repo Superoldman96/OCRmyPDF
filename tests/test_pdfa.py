@@ -316,3 +316,25 @@ def test_pdfa(resources, outpdf, optimize, pdfa_level):
 
     with pikepdf.open(outpdf) as pdf, pdf.open_metadata() as m:
         assert m.pdfa_status == f'{pdfa_level}B'
+
+
+def test_auto_force_ocr_declares_pdfa_without_verapdf(resources, outpdf, monkeypatch):
+    """Force mode without veraPDF gets real PDF/A declarations, not a bare PDF."""
+    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
+
+    def no_ghostscript(*args, **kwargs):
+        raise AssertionError('Ghostscript fallback should not be needed')
+
+    monkeypatch.setattr('ocrmypdf._pipeline._ghostscript_pdfa_fallback', no_ghostscript)
+    check_ocrmypdf(
+        resources / 'trivial.pdf',
+        outpdf,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+        '--force-ocr',
+        '--output-type',
+        'auto',
+    )
+    assert file_claims_pdfa(outpdf)['pass']
+    with pikepdf.open(outpdf) as pdf:
+        assert '/OutputIntents' in pdf.Root

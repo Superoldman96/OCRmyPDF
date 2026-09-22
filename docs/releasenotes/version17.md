@@ -13,6 +13,20 @@
   leaves, for example, a `cm` with too few operands. OCRmyPDF treated that as
   an unreadable file and stopped. It now warns and carries on with the
   graphics state it has, as PDF viewers do. {issue}`1054`
+- The document language (`/Lang` in the PDF catalog) was not set when the
+  OCR language was given as an ISO 639-2 terminology code, which is what
+  Tesseract uses: `-l deu`, `-l fra`, `-l nld`, `-l ces`, `-l ell` and fifteen
+  others. Our language table is keyed by the bibliographic codes (`ger`,
+  `fre`, ...), so the lookup missed and the language was silently omitted.
+  Both spellings now resolve. Languages without a two-letter ISO 639-1 code,
+  such as Asturian, now get their three-letter code as BCP 47 requires,
+  instead of nothing. {issue}`1749`
+- With the default `--output-type auto`, `--force-ocr` and no verapdf
+  installed (as in the Docker image), the output was passed through labelled
+  as PDF/A without the OutputIntent and XMP conformance metadata that PDF/A
+  requires, so the file was an ordinary PDF. The rebuilt file is now given the
+  PDF/A declarations directly, without Ghostscript, as intended; if that fails
+  the existing Ghostscript fallback runs. {issue}`1751`
 
 ## v17.12.1
 
