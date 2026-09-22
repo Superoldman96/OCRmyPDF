@@ -845,9 +845,23 @@ ISO_639_3 = {
 }
 
 
+# ISO_639_3 is keyed by the bibliographic (ISO 639-2/B) code. Where a language
+# also has a distinct terminology (ISO 639-2/T) code, it appears in the 'alt'
+# field. Tesseract names its language packs with terminology codes, so we need
+# to resolve those too.
+ISO_639_3_ALT = {data.alt: data for data in ISO_639_3.values() if data.alt}
+
+
 def iso_639_2_from_3(iso3: str) -> str:
-    """Convert ISO 639-3 code to ISO 639-2 code."""
-    if iso3 in ISO_639_3:
-        return ISO_639_3[iso3].alpha_2
-    else:
+    """Convert a three-letter ISO 639 code to a BCP 47 language tag.
+
+    Accepts either the bibliographic (ISO 639-2/B) or terminology
+    (ISO 639-2/T) three-letter code. Returns the two-letter ISO 639-1 code if
+    the language has one, since BCP 47 requires the shortest available ISO 639
+    code; otherwise returns the three-letter code. Returns an empty string if
+    the code is not recognized.
+    """
+    data = ISO_639_3.get(iso3) or ISO_639_3_ALT.get(iso3)
+    if data is None:
         return ""
+    return data.alpha_2 or iso3
