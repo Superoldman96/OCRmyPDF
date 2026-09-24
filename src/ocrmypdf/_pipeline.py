@@ -15,9 +15,11 @@ from contextlib import suppress
 from io import BytesIO
 from pathlib import Path
 from shutil import copyfileobj
-from typing import TYPE_CHECKING, Any, BinaryIO, TypeVar, cast
+from typing import TYPE_CHECKING, BinaryIO, TypeVar, cast
 
 if TYPE_CHECKING:
+    from pikepdf.pdfa import Report
+
     from ocrmypdf.hocrtransform import OcrElement
 
 import img2pdf
@@ -27,7 +29,7 @@ from PIL import Image, ImageColor, ImageDraw
 from ocrmypdf._concurrent import Executor
 from ocrmypdf._exec import unpaper
 from ocrmypdf._jobcontext import PageContext, PdfContext
-from ocrmypdf._metadata import repair_docinfo_nuls
+from ocrmypdf._metadata import metadata_fixup, repair_docinfo_nuls
 from ocrmypdf._options import OcrOptions, PathOrIO, ProcessingMode, TaggedPdfMode
 from ocrmypdf._pageboxes import log_box_repairs, repair_page_boxes
 from ocrmypdf._stdoutprotect import get_protected_stdout_fd
@@ -38,6 +40,7 @@ from ocrmypdf.exceptions import (
     EncryptedPdfError,
     InputFileError,
     NonEmbeddedFontsError,
+    PdfaConversionFailedError,
     PriorOcrFoundError,
     SubprocessOutputError,
     TaggedPDFError,
@@ -53,7 +56,11 @@ from ocrmypdf.pdfa import (
     file_claims_pdfa,
     find_nonembedded_cid_fonts,
     generate_pdfa_ps,
+    output_type_to_flavour,
     speculative_pdfa_conversion,
+)
+from ocrmypdf.pdfa import (
+    get_pdf_save_settings as get_pdf_save_settings,  # re-exported
 )
 from ocrmypdf.pdfinfo import Colorspace, Encoding, FloatRect, Ink, PageInfo, PdfInfo
 from ocrmypdf.pluginspec import GhostscriptRasterDevice, OrientationConfidence
@@ -1058,13 +1065,36 @@ def convert_to_pdfa(input_pdf: Path, input_ps_stub: Path, context: PdfContext) -
     return output_file
 
 
-def try_speculative_pdfa(input_pdf: Path, context: PdfContext) -> Path | None:
-    """Try speculative PDF/A conversion with verapdf validation.
+def _internal_backend_failed(reason: str) -> PdfaConversionFailedError:
+    return PdfaConversionFailedError(
+        f"--pdfa-backend internal could not produce PDF/A: {reason}\n"
+        "Use --pdfa-backend auto or ghostscript to convert with Ghostscript, "
+        "or --output-type pdf to skip PDF/A."
+    )
 
-    This attempts a fast PDF/A conversion by adding PDF/A structures
-    directly with pikepdf, then validating with verapdf. If validation
-    passes, returns the converted file. If it fails or verapdf is not
-    available, returns None to signal that Ghostscript should be used.
+
+def _describe_unapproved(report: Report) -> str:
+    """Say why pikepdf's PDF/A validator did not approve a file."""
+    if report.verdict == 'not_checked':
+        return (
+            f"it contains {len(report.unsupported)} construct(s) pikepdf's "
+            "validator does not check, so it could not be confirmed as PDF/A"
+        )
+    return f"it failed validation with {len(report.violations)} violation(s)"
+
+
+def try_speculative_pdfa(input_pdf: Path, context: PdfContext) -> Path | None:
+    """Try PDF/A conversion without Ghostscript, validated by pikepdf.
+
+    This repairs and declares the PDF/A structures directly with
+    `pikepdf.pdfa.save`, which validates the bytes it writes and keeps them
+    only if they pass. If validation passes, returns the converted file. If
+    the verdict is 'fail' or 'not_checked', returns None to signal that
+    Ghostscript should be used, or, for the 'pdfa' output types with
+    ``--pdfa-backend internal``, raises.
+
+    With ``--pdfa-backend ghostscript`` nothing is attempted and None is
+    returned.
 
     Args:
         input_pdf: Path to the PDF to convert
@@ -1072,49 +1102,49 @@ def try_speculative_pdfa(input_pdf: Path, context: PdfContext) -> Path | None:
 
     Returns:
         Path to valid PDF/A file, or None if speculative conversion failed
+
+    Raises:
+        PdfaConversionFailedError: If ``--pdfa-backend internal`` is required to
+            produce PDF/A (a 'pdfa' output type) and could not.
     """
-    from ocrmypdf._exec import verapdf
+    from pikepdf.pdfa import PdfaError
 
     options = context.options
-
-    # Skip speculative conversion if user requested specific image compression,
-    # since that requires Ghostscript to apply
-    gs_opts = getattr(options, 'ghostscript', None)
-    if gs_opts is not None:
-        compression = getattr(gs_opts, 'pdfa_image_compression', 'auto')
-        if compression != 'auto':
-            log.debug(
-                'Skipping speculative PDF/A: --pdfa-image-compression=%s requires '
-                'Ghostscript',
-                compression,
-            )
-            return None
-
-    if not verapdf.available():
-        log.debug('verapdf not available, skipping speculative PDF/A conversion')
+    if options.pdfa_backend == 'ghostscript':
+        log.debug('Using Ghostscript for PDF/A, as --pdfa-backend ghostscript')
         return None
-    output_file = context.get_path('speculative_pdfa.pdf')
+    required = options.pdfa_backend == 'internal' and options.output_type.startswith(
+        'pdfa'
+    )
+    fallback = '' if options.pdfa_backend == 'internal' else '; using Ghostscript'
 
+    output_file = context.get_path('speculative_pdfa.pdf')
+    flavour = output_type_to_flavour(options.output_type)
     try:
         speculative_pdfa_conversion(input_pdf, output_file, options.output_type)
-
-        flavour = verapdf.output_type_to_flavour(options.output_type)
-        result = verapdf.validate(output_file, flavour)
-
-        if result.valid:
-            log.info('Speculative PDF/A conversion succeeded - skipping Ghostscript')
-            return output_file
-        else:
-            log.debug(
-                'Speculative PDF/A validation failed (%d rule violations), '
-                'falling back to Ghostscript',
-                result.failed_rules,
-            )
-            return None
-
-    except Exception as e:
+    except PdfaError as e:
+        report = e.report
+    except Exception as e:  # pylint: disable=broad-except
+        if required:
+            raise _internal_backend_failed(f"the conversion failed ({e})") from e
         log.debug('Speculative PDF/A conversion failed: %s', e)
         return None
+    else:
+        log.info('Speculative PDF/A conversion succeeded - skipping Ghostscript')
+        return output_file
+
+    if required:
+        raise _internal_backend_failed(
+            f"{_describe_unapproved(report)}.\n" + report.summary()
+        )
+    log.info(
+        'Speculative PDF/A-%s conversion was not used: %s%s',
+        flavour.value,
+        _describe_unapproved(report),
+        fallback,
+    )
+    log.debug('%s', report.summary(limit=len(report.findings)))
+    return None
 
 
 def _ghostscript_pdfa_fallback(input_pdf: Path, context: PdfContext) -> Path | None:
@@ -1148,32 +1178,14 @@ def _ghostscript_pdfa_fallback(input_pdf: Path, context: PdfContext) -> Path | N
     return gs_out
 
 
-def try_auto_pdfa(input_pdf: Path, context: PdfContext) -> tuple[Path, str]:
-    """Best-effort PDF/A for 'auto' output type.
+def _auto_keeps_regular_pdf(input_pdf: Path) -> bool:
+    """Return True if 'auto' output type must not attempt PDF/A at all.
 
-    Order of attempts, first success wins:
-    1. Non-embedded CID fonts -> regular PDF (Ghostscript would corrupt them).
-    2. Speculative conversion validated by verapdf (no Ghostscript).
-    3. Without verapdf, pass through unchanged if the input already claims PDF/A.
-    4. Without verapdf, if force-ocr rebuilt the PDF from scratch, add the PDF/A
-       declarations speculatively and trust them without validation.
-    5. Ghostscript conversion (best-effort; failures fall through).
-    6. Regular PDF if none of the above produced PDF/A.
-
-    Args:
-        input_pdf: Path to the PDF to convert
-        context: The PDF context
-
-    Returns:
-        Tuple of (output_path, actual_output_type) where actual_output_type
-        is 'pdfa' if PDF/A was achieved, 'pdf' otherwise
+    Non-embedded CID fonts cannot be made PDF/A without Ghostscript font
+    substitution that corrupts CID/CJK text. Rather than risk an existing
+    text layer, 'auto' downgrades to a regular PDF (the same outcome as any
+    other case where best-effort PDF/A is not achievable).
     """
-    from ocrmypdf._exec import verapdf
-
-    # Non-embedded CID fonts cannot be made PDF/A without Ghostscript font
-    # substitution that corrupts CID/CJK text. Rather than risk an existing
-    # text layer, downgrade to a regular PDF (the same outcome as any other
-    # case where best-effort PDF/A is not achievable).
     with pikepdf.open(input_pdf) as pdf_file:
         nonembedded = find_nonembedded_cid_fonts(pdf_file)
     if nonembedded:
@@ -1183,71 +1195,163 @@ def try_auto_pdfa(input_pdf: Path, context: PdfContext) -> tuple[Path, str]:
             "regular PDF. Use --output-type pdf to select this explicitly.",
             ', '.join(sorted(nonembedded)),
         )
-        return (input_pdf, 'pdf')
-
-    # Cheap path: speculative conversion validated by verapdf (no Ghostscript).
-    if verapdf.available():
-        result = try_speculative_pdfa(input_pdf, context)
-        if result is not None:
-            return (result, 'pdfa')
-        log.info('Auto mode: speculative PDF/A validation failed')
-    else:
-        # Without verapdf we cannot validate, but some cases are safe enough to
-        # trust: our modifications do not break PDF/A compliance.
-        if file_claims_pdfa(input_pdf)['pass']:
-            # The input already declares PDF/A and we only grafted text onto it.
-            log.info('Auto mode: passing through as PDF/A (input already compliant)')
-            return (input_pdf, 'pdfa')
-        if context.options.mode == ProcessingMode.force:
-            # force-ocr rewrote the entire PDF from scratch, so the content is
-            # PDF/A-clean; it only lacks the OutputIntent and XMP declarations.
-            declared = _declare_pdfa_unvalidated(input_pdf, context)
-            if declared is not None:
-                log.info(
-                    'Auto mode: added PDF/A declarations to the force-ocr rebuild '
-                    '(not validated - verapdf is not installed)'
-                )
-                return (declared, 'pdfa')
-
-    # Fall back to Ghostscript to produce real PDF/A (v16 behavior). Best-effort:
-    # if Ghostscript is unavailable or cannot safely produce PDF/A, keep a
-    # regular PDF rather than error.
-    gs_out = _ghostscript_pdfa_fallback(input_pdf, context)
-    if gs_out is not None:
-        log.info('Auto mode: produced PDF/A via Ghostscript')
-        return (gs_out, 'pdfa')
-
-    log.info('Auto mode: could not produce PDF/A, outputting regular PDF')
-    return (input_pdf, 'pdf')
+        return True
+    return False
 
 
-def _declare_pdfa_unvalidated(input_pdf: Path, context: PdfContext) -> Path | None:
-    """Add PDF/A declarations to a PDF without validating the result.
+def _pdfa_without_speculation(input_pdf: Path, context: PdfContext) -> Path | None:
+    """Convert to PDF/A with Ghostscript, after speculative conversion failed.
 
-    Used in 'auto' mode when verapdf is unavailable and the PDF was rebuilt
-    from scratch by force mode: the content is already PDF/A-clean, so only the
-    sRGB OutputIntent and the pdfaid XMP metadata are missing. This is much
-    faster than a Ghostscript round trip.
+    For the 'pdfa' output types, Ghostscript must succeed, and errors are
+    raised. For 'auto', Ghostscript is best-effort (unless ``--pdfa-backend
+    internal`` rules it out), and None means a regular PDF is to be output.
 
     Args:
-        input_pdf: Path to the PDF to convert.
+        input_pdf: The PDF that speculative conversion started from.
         context: The PDF context.
 
     Returns:
-        Path to the declared PDF/A file, or None if the conversion failed.
+        The PDF/A file, or None for a regular PDF.
     """
-    gs_opts = getattr(context.options, 'ghostscript', None)
-    if gs_opts is not None and gs_opts.pdfa_image_compression != 'auto':
-        # Only Ghostscript can apply the requested image compression.
-        return None
-    output_file = context.get_path('speculative_pdfa.pdf')
-    try:
-        # 'auto' is not a PDF/A level; use the same default as Ghostscript
-        # conversion, PDF/A-2b.
-        return speculative_pdfa_conversion(input_pdf, output_file, 'pdfa-2')
-    except Exception as e:  # pylint: disable=broad-except
-        log.debug('Unvalidated PDF/A declaration failed: %s', e)
-        return None
+    options = context.options
+    if options.output_type.startswith('pdfa'):
+        ps_stub_out = generate_postscript_stub(context)
+        return convert_to_pdfa(input_pdf, ps_stub_out, context)
+    if options.pdfa_backend != 'internal':
+        gs_out = _ghostscript_pdfa_fallback(input_pdf, context)
+        if gs_out is not None:
+            log.info('Auto mode: produced PDF/A via Ghostscript')
+            return gs_out
+    log.info('Auto mode: could not produce PDF/A, outputting regular PDF')
+    return None
+
+
+def _fix_metadata_and_optimize(
+    input_pdf: Path,
+    context: PdfContext,
+    executor: Executor,
+    pdfa_output_type: str | None,
+) -> tuple[Path, Sequence[str]]:
+    """Run the metadata fixup and the optimizer, the last steps of the pipeline.
+
+    A PDF/A file is saved with the settings pikepdf pins for its flavour, so
+    that the bytes written remain valid PDF/A.
+    """
+    optimizing = context.plugin_manager.is_optimization_enabled(context=context)
+    output_type = context.options.output_type
+    save_settings = get_pdf_save_settings(
+        pdfa_output_type or ('pdf' if output_type == 'auto' else output_type)
+    )
+    save_settings['linearize'] = not optimizing and should_linearize(input_pdf, context)
+    pdf_out = metadata_fixup(
+        input_pdf,
+        context,
+        pdf_save_settings=save_settings,
+        pdfa_output_type=pdfa_output_type,
+    )
+    return optimize_pdf(pdf_out, context, executor)
+
+
+def _final_speculative_pdfa_passes(output_pdf: Path, context: PdfContext) -> bool:
+    """Validate the final file of a speculative PDF/A conversion.
+
+    The metadata fixup and the optimizer rewrite the candidate that
+    `try_speculative_pdfa` approved, so the file that is output is validated
+    again, with `pikepdf.pdfa.validate_written`. A 'not_checked' verdict is
+    treated like 'fail'.
+
+    Raises:
+        PdfaConversionFailedError: If ``--pdfa-backend internal`` is required to
+            produce PDF/A (a 'pdfa' output type) and the file is not approved.
+    """
+    from pikepdf.pdfa import validate_written
+
+    options = context.options
+    flavour = output_type_to_flavour(options.output_type)
+    report = validate_written(output_pdf, flavour)
+    if report.verdict == 'pass':
+        log.debug('Final PDF/A-%s output validated', flavour.value)
+        return True
+    if options.pdfa_backend == 'internal' and options.output_type.startswith('pdfa'):
+        raise _internal_backend_failed(
+            f"after metadata and optimization, {_describe_unapproved(report)}.\n"
+            + report.summary()
+        )
+    fallback = '' if options.pdfa_backend == 'internal' else '; using Ghostscript'
+    log.info(
+        'Speculative PDF/A-%s output was not used after metadata and '
+        'optimization: %s%s',
+        flavour.value,
+        _describe_unapproved(report),
+        fallback,
+    )
+    log.info('%s', report.summary())
+    return False
+
+
+def finish_output_pdf(
+    input_pdf: Path, context: PdfContext, executor: Executor
+) -> tuple[Path, Sequence[str]]:
+    """Produce the output file: convert to PDF/A if needed, fix metadata, optimize.
+
+    For the 'pdfa' output types and 'auto', PDF/A is attempted first by
+    speculative conversion (`try_speculative_pdfa`). Its candidate then goes
+    through the metadata fixup and the optimizer, and the final file is
+    validated again, since it is the file that is output. If speculative
+    conversion or the final validation fails, Ghostscript converts
+    *input_pdf* instead, and its output goes through the same final steps:
+
+    - for the 'pdfa' output types, Ghostscript is required, or with
+      ``--pdfa-backend internal``, PdfaConversionFailedError is raised;
+    - for 'auto', Ghostscript is best-effort, and a regular PDF is output if
+      it is unavailable, fails, or is ruled out by ``--pdfa-backend internal``.
+      Inputs with non-embedded CID fonts are output as regular PDF without
+      attempting PDF/A.
+
+    For 'auto', the output type achieved, 'pdfa' or 'pdf', is recorded as
+    ``_actual_output_type`` in the options' ``extra_attrs``.
+
+    Args:
+        input_pdf: The PDF to finish.
+        context: The PDF context.
+        executor: The executor for the optimizer.
+
+    Returns:
+        The output file and the optimizer's messages.
+    """
+    options = context.options
+    output_type = options.output_type
+    auto = output_type == 'auto'
+    if not auto and not output_type.startswith('pdfa'):
+        return _fix_metadata_and_optimize(input_pdf, context, executor, None)
+    pdfa_output_type = 'pdfa' if auto else output_type
+
+    def finish(pdf: Path | None) -> tuple[Path, Sequence[str]]:
+        if auto:
+            options.extra_attrs['_actual_output_type'] = (
+                'pdf' if pdf is None else 'pdfa'
+            )
+        if pdf is None:
+            return _fix_metadata_and_optimize(input_pdf, context, executor, None)
+        return _fix_metadata_and_optimize(pdf, context, executor, pdfa_output_type)
+
+    if auto and _auto_keeps_regular_pdf(input_pdf):
+        return finish(None)
+
+    speculative = try_speculative_pdfa(input_pdf, context)
+    if speculative is not None:
+        result = finish(speculative)
+        if _final_speculative_pdfa_passes(result[0], context):
+            return result
+
+    gs_out = _pdfa_without_speculation(input_pdf, context)
+    if gs_out is not None and not file_claims_pdfa(gs_out)['pass']:
+        # Ghostscript was asked for PDF/A and did not declare it. Leave the
+        # metadata undeclared too, so that the failure is reported.
+        if auto:
+            options.extra_attrs['_actual_output_type'] = 'pdf'
+        return _fix_metadata_and_optimize(gs_out, context, executor, None)
+    return finish(gs_out)
 
 
 def should_linearize(working_file: Path, context: PdfContext) -> bool:
@@ -1257,29 +1361,6 @@ def should_linearize(working_file: Path, context: PdfContext) -> bool:
     """
     filesize = working_file.stat().st_size
     return filesize > (context.options.fast_web_view * 1_000_000)
-
-
-def get_pdf_save_settings(output_type: str) -> dict[str, Any]:
-    """Get pikepdf.Pdf.save settings for the given output type.
-
-    Essentially, don't use features that are incompatible with a given
-    PDF/A specification.
-    """
-    if output_type == 'pdfa-1':
-        # Trigger recompression to ensure object streams are removed, because
-        # Acrobat complains about them in PDF/A-1b validation.
-        return dict(
-            preserve_pdfa=True,
-            compress_streams=True,
-            stream_decode_level=pikepdf.StreamDecodeLevel.generalized,
-            object_stream_mode=pikepdf.ObjectStreamMode.disable,
-        )
-    else:
-        return dict(
-            preserve_pdfa=True,
-            compress_streams=True,
-            object_stream_mode=(pikepdf.ObjectStreamMode.generate),
-        )
 
 
 def _file_size_ratio(

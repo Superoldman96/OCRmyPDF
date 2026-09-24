@@ -14,9 +14,9 @@ from pydantic import BaseModel, Field, model_validator
 
 from ocrmypdf import Executor, PdfContext, hookimpl
 from ocrmypdf._exec import jbig2enc, pngquant
-from ocrmypdf._pipeline import get_pdf_save_settings
 from ocrmypdf.cli import numeric
 from ocrmypdf.optimize import optimize
+from ocrmypdf.pdfa import get_pdf_save_settings
 from ocrmypdf.subprocess import check_external_program
 
 log = logging.getLogger(__name__)
@@ -211,10 +211,11 @@ def optimize_pdf(
     executor: Executor,
     linearize: bool,
 ) -> tuple[Path, Sequence[str]]:
-    save_settings = dict(
-        linearize=linearize,
-        **get_pdf_save_settings(context.options.output_type),
-    )
+    output_type = context.options.output_type
+    if output_type == 'auto':
+        # The output type achieved, recorded by finish_output_pdf
+        output_type = context.options.extra_attrs.get('_actual_output_type', 'pdf')
+    save_settings = get_pdf_save_settings(output_type) | {'linearize': linearize}
     result_path = optimize(input_pdf, output_pdf, context, save_settings, executor)
     messages = []
     if context.options.optimize == 0:
