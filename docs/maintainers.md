@@ -37,9 +37,14 @@ OCRmyPDF has the following runtime dependencies:
 
 **For PDF/A conversion**:
 
-- `verapdf` (system binary) with pikepdf's speculative conversion - OR -
+- Speculative conversion with pikepdf, checked by pikepdf's PDF/A validator
+  (`pikepdf.pdfa`, which needs the `pikepdf[pdfa]` extra: `jsonschema`,
+  `referencing` and `fonttools`); Ghostscript is used for files that fail
+  validation
 - `ghostscript` (system binary)
-- Recommendation: Install both for best compatibility
+- Recommendation: Install Ghostscript for files that need real conversion.
+  veraPDF is no longer used at runtime; the test suite uses it, if
+  installed, to cross-check pikepdf's validator.
 
 **For OCR**:
 - `tesseract-ocr` (system binary) - Required for MVP
@@ -59,7 +64,7 @@ OCRmyPDF has the following runtime dependencies:
 While Ghostscript remains a capable and feature-rich tool with a long history,
 recent releases have introduced some compatibility challenges that OCRmyPDF v17
 addresses through alternative codepaths. For the best user experience, packagers
-should install both Ghostscript and the alternative tools (pypdfium2, verapdf)
+should install both Ghostscript and the alternative tools (pypdfium2)
 when available.
 
 On Windows, OCRmyPDF will also check the registry for Tesseract and Ghostscript
@@ -106,7 +111,7 @@ The following table summarizes the dependency options introduced in v17.0.0:
 | Feature | Option 1 | Option 2 | Notes |
 |---------|----------|----------|-------|
 | PDF rasterization | pypdfium2 (Python) | ghostscript (binary) | pypdfium2 preferred when available |
-| PDF/A conversion | verapdf + pikepdf | ghostscript | verapdf validates speculative conversion |
+| PDF/A conversion | pikepdf (`pikepdf.pdfa`) | ghostscript | pikepdf validates speculative conversion |
 | Text rendering | fpdf2 (Python) | - | Required, replaces legacy hOCR renderer |
 | OCR | tesseract-ocr | `--ocr-engine none` | Can be skipped entirely |
 
@@ -116,13 +121,13 @@ The following table summarizes the dependency options introduced in v17.0.0:
 
 **Recommended installation:**
 
-- tesseract-ocr + pypdfium2 + ghostscript + verapdf + fpdf2 + unpaper + pngquant + jbig2enc
+- tesseract-ocr + pypdfium2 + ghostscript + fpdf2 + unpaper + pngquant + jbig2enc
 
 :::{warning}
-If Ghostscript is not installed and verapdf is not available, PDF/A output
-cannot be produced. The output will be a standard PDF instead. This is a
-breaking change for rare configurations that previously relied on PDF/A
-output without Ghostscript alternatives.
+If Ghostscript is not installed, PDF/A output can only be produced for files
+that pass pikepdf's PDF/A validator after speculative conversion. Other files
+are output as a standard PDF (`--output-type auto`) or fail with an error
+(`--output-type pdfa`).
 :::
 
 **Sample debian/control dependency specification**
@@ -136,8 +141,11 @@ Depends:
  img2pdf,
  python3-coloredlogs,
  python3-deprecation,
+ python3-fonttools (>= 4.40),  # for pikepdf.pdfa
+ python3-jsonschema (>= 4.18),  # for pikepdf.pdfa
  python3-pdfminer (>= 20181108+dfsg-3),
- python3-pikepdf (>= 10.2),
+ python3-pikepdf (>= 10.14),
+ python3-referencing,  # for pikepdf.pdfa
  python3-pil,
  python3-pluggy,
  python3-reportlab,
@@ -154,7 +162,6 @@ Recommends:
  pngquant,
  pypdfium2,  # Not currently in Debian
  unpaper,
- verapdf,    # Not currently in Debian
 Suggests:
  ocrmypdf-doc,
  python-watchfiles,

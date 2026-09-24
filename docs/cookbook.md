@@ -311,15 +311,31 @@ ocrmypdf --rasterizer ghostscript input.pdf output.pdf
 :::{versionadded} 17.0.0
 :::
 
-With verapdf installed, OCRmyPDF can produce PDF/A without using Ghostscript
-for conversion. This is faster and avoids some Ghostscript limitations.
+OCRmyPDF can often produce PDF/A without using Ghostscript for conversion:
+it adds the PDF/A structures itself and checks the result with pikepdf's
+PDF/A validator, and only uses Ghostscript for files that fail the check.
+This is faster and avoids some Ghostscript limitations.
+
+:::{versionchanged} 17.13.0
+The check is made by pikepdf's PDF/A validator (`pikepdf.pdfa`); veraPDF is
+no longer needed.
+:::
 
 ```bash
-# Uses speculative conversion with verapdf validation (default)
+# Best-effort PDF/A: speculative conversion, then Ghostscript, then plain PDF
 ocrmypdf --output-type auto input.pdf output.pdf
 
-# Explicitly request Ghostscript-based PDF/A conversion
+# Required PDF/A: speculative conversion, then Ghostscript
 ocrmypdf --output-type pdfa input.pdf output.pdf
+
+# Required PDF/A without Ghostscript: fail if the validator does not approve
+ocrmypdf --output-type pdfa --pdfa-backend internal input.pdf output.pdf
+
+# Always convert with Ghostscript
+ocrmypdf --output-type pdfa --pdfa-backend ghostscript input.pdf output.pdf
+
+# A specific image compression also needs Ghostscript, and selects it
+ocrmypdf --output-type pdfa --pdfa-image-compression lossless input.pdf output.pdf
 ```
 
 ### Using --mode instead of legacy flags
