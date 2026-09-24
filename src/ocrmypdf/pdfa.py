@@ -267,35 +267,16 @@ def get_pdf_save_settings(output_type: str) -> dict[str, Any]:
 
 
 def log_prepare_result(result: PrepareResult | None) -> None:
-    """Log what `pikepdf.pdfa.prepare` changed.
+    """Log what `pikepdf.pdfa.prepare` changed, at the level pikepdf suggests.
 
     Removing hidden annotations discards content the user may care about, so
-    it is a warning. Other changes to what the reader might notice are logged
-    at info level, and the rest at debug level.
+    it is a warning. Other changes the reader might notice are logged at info
+    level, and the rest at debug level.
     """
     if result is None:
         return
-    from pikepdf.pdfa import PrepareResult
-
-    warnings = PrepareResult(
-        annotations_removed=result.annotations_removed,
-        annotations_removed_pages=result.annotations_removed_pages,
-    )
-    infos = PrepareResult(
-        print_flags_set=result.print_flags_set,
-        xmp_unreadable=result.xmp_unreadable,
-        xmp_dropped=result.xmp_dropped,
-    )
-    shown = set()
-    for line in warnings.describe():
-        log.warning('%s', line)
-        shown.add(line)
-    for line in infos.describe():
-        log.info('%s', line)
-        shown.add(line)
-    for line in result.describe():
-        if line not in shown:
-            log.debug('%s', line)
+    for level, sentence in result.messages():
+        log.log(logging.getLevelName(level.upper()), '%s', sentence)
 
 
 def prepare_pdfa(pdf: Pdf, output_type: str) -> PrepareResult:

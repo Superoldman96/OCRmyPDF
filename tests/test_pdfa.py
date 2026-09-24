@@ -648,3 +648,23 @@ def test_rgb_color_strategy_api_takes_speculative_path(
         )
     assert SPECULATIVE_OK in caplog.text
     assert file_claims_pdfa(outpdf)['pass']
+
+
+def test_failed_speculative_conversion_logs_repairs(
+    resources, outpdf, caplog, monkeypatch
+):
+    """What pikepdf repaired is logged even when the result is not approved."""
+    _forbid_ghostscript_pdfa(monkeypatch)
+    with caplog.at_level(logging.DEBUG, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'blank.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            'auto',
+            '--pdfa-backend',
+            'internal',
+        )
+    assert 'Declared PDF/A conformance in the XMP metadata' in caplog.text
+    assert "construct(s) pikepdf's validator does not check" in caplog.text

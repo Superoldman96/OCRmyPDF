@@ -56,6 +56,7 @@ from ocrmypdf.pdfa import (
     file_claims_pdfa,
     find_nonembedded_cid_fonts,
     generate_pdfa_ps,
+    log_prepare_result,
     output_type_to_flavour,
     speculative_pdfa_conversion,
 )
@@ -1124,6 +1125,7 @@ def try_speculative_pdfa(input_pdf: Path, context: PdfContext) -> Path | None:
         speculative_pdfa_conversion(input_pdf, output_file, options.output_type)
     except PdfaError as e:
         report = e.report
+        log_prepare_result(report.prepared)
     except Exception as e:  # pylint: disable=broad-except
         if required:
             raise _internal_backend_failed(f"the conversion failed ({e})") from e

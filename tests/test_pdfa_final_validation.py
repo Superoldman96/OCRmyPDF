@@ -84,9 +84,7 @@ def original_with_xmp_only_author(resources, tmp_path) -> Path:
         for key in list(pdf.docinfo.keys()):
             del pdf.docinfo[key]
         pdf.docinfo[Name.Title] = 'English title'
-        # Keep the packet as written: fix_metadata_version would give every
-        # Description the uuid rdf:about of the second one.
-        pdf.save(path, fix_metadata_version=False)
+        pdf.save(path)
     return path
 
 
@@ -128,8 +126,11 @@ def test_metadata_fixup_keeps_speculative_candidate_valid(
             ('x-default', 'English title'),
             ('fr', 'Titre'),
         }
-        # The description of another resource was dropped
-        assert _langalt_items(packet, 'description') == set()
+        # Saving the original gave both Descriptions the same rdf:about, so
+        # both describe the document and both are kept
+        assert _langalt_items(packet, 'description') == {
+            ('x-default', 'About another resource')
+        }
         assert pdf.open_metadata().get('dc:creator') == ['XMP Only Author']
         assert str(pdf.docinfo[Name.Author]) == 'XMP Only Author'
         assert str(pdf.docinfo[Name.Title]) == 'English title'
