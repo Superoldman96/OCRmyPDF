@@ -41,6 +41,8 @@ PdfRenderer = Literal['auto', 'sandwich', 'fpdf2', 'hocr', 'hocrdebug']
 
 Rasterizer = Literal['auto', 'ghostscript', 'pypdfium']
 
+PdfaBackend = Literal['auto', 'ghostscript', 'internal']
+
 
 class ProcessingMode(StrEnum):
     """OCR processing mode for handling pages with existing text.
@@ -164,6 +166,7 @@ class OcrOptions(BaseModel):
     # Core OCR options
     languages: list[str] = Field(default_factory=lambda: [DEFAULT_LANGUAGE])
     output_type: OutputType = 'auto'
+    pdfa_backend: PdfaBackend = 'auto'
     mode: ProcessingMode = ProcessingMode.default
 
     # Backward compatibility properties for force_ocr, skip_text, redo_ocr

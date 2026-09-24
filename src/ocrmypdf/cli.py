@@ -180,15 +180,33 @@ Online documentation is located at:
         '--output-type',
         choices=['auto', 'pdfa', 'pdf', 'pdfa-1', 'pdfa-2', 'pdfa-3', 'none'],
         default='auto',
-        help="Choose output type. 'auto' (default) produces best-effort PDF/A "
-        "without requiring Ghostscript - uses verapdf validation when available, "
-        "otherwise passes through as PDF/A if safe (input already PDF/A or "
-        "force-ocr was used), or falls back to regular PDF. 'pdfa' creates a "
-        "PDF/A-2b compliant file for long term archiving (requires Ghostscript "
-        "as fallback). 'pdf' minimizes changes to the input file. 'pdfa-1' "
+        help="Choose output type. 'auto' (default) produces best-effort PDF/A: "
+        "OCRmyPDF adds the PDF/A declarations itself and checks the result with "
+        "pikepdf's PDF/A validator; if the file does not pass, it converts "
+        "with Ghostscript if installed, or else outputs a regular PDF. 'pdfa' "
+        "creates a PDF/A-2b compliant file for long term archiving the same "
+        "way, but requires Ghostscript for files that fail validation. See "
+        "--pdfa-backend to choose whether Ghostscript is used. 'pdf' "
+        "minimizes changes to the input file. 'pdfa-1' "
         "creates a PDF/A-1b file. 'pdfa-2' is equivalent to 'pdfa'. 'pdfa-3' "
         "creates a PDF/A-3b file. 'none' will produce no output, which may be "
         "helpful if only the --sidecar is desired.",
+    )
+    parser.add_argument(
+        '--pdfa-backend',
+        choices=['auto', 'ghostscript', 'internal'],
+        default='auto',
+        help="Choose how PDF/A is produced. 'internal' repairs the file and "
+        "adds the PDF/A declarations with pikepdf, passing JPEG images "
+        "through unchanged, and checks the result with pikepdf's PDF/A "
+        "validator. 'ghostscript' converts the file with Ghostscript, "
+        "which re-encodes images and converts colours as needed. 'auto' (the "
+        "default) tries 'internal' first and uses Ghostscript if the validator "
+        "does not approve the result, or if a Ghostscript-only option such as "
+        "--pdfa-image-compression or --ghostscript-jpeg-quality is given. "
+        "With 'internal', a file the validator does not approve is an error "
+        "for the 'pdfa' output types, and becomes a regular PDF for "
+        "--output-type auto.",
     )
 
     # Use null string '\0' as sentinel to indicate the user supplied no argument,

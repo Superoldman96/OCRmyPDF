@@ -9,6 +9,8 @@ import logging
 import os
 from typing import TYPE_CHECKING
 
+from ocrmypdf.exceptions import BadArgsError
+
 if TYPE_CHECKING:
     from ocrmypdf._options import OcrOptions
     from ocrmypdf._plugin_manager import OcrmypdfPluginManager
@@ -123,16 +125,7 @@ class ValidationCoordinator:
                 "`-` to suppress this message."
             )
 
-        # Validate PDF/A image compression compatibility
-        if (
-            options.ghostscript.pdfa_image_compression
-            and options.ghostscript.pdfa_image_compression != 'auto'
-            and not options.output_type.startswith('pdfa')
-        ):
-            log.warning(
-                "--pdfa-image-compression argument only applies when "
-                "--output-type is one of 'pdfa', 'pdfa-1', or 'pdfa-2'"
-            )
+        self._resolve_pdfa_backend(options)
 
         # Validate options that depend on OCR engine detection. Skew and
         # orientation are measured by the OCR engine, and the null engine
@@ -153,6 +146,49 @@ class ValidationCoordinator:
                     "orientation. Other image processing options are "
                     "unaffected."
                 )
+
+    def _resolve_pdfa_backend(self, options: OcrOptions) -> None:
+        """Reconcile --pdfa-backend with the options only Ghostscript applies.
+
+        With the internal backend these options would have no effect, so they
+        are an error. With the auto backend they select Ghostscript, since the
+        user evidently wants Ghostscript to process the images.
+
+        OCRmyPDF does no colour conversion of its own. The colour conversion
+        strategies ``LeaveColorUnchanged`` and ``RGB`` are satisfied by any
+        file pikepdf's PDF/A validator approves, since that file's device colour
+        is already acceptable under the sRGB output intent, so only the other
+        strategies require Ghostscript.
+        """
+        gs_opts = options.ghostscript
+        color_strategy = str(gs_opts.color_conversion_strategy)
+        gs_only = [
+            name
+            for name, is_set in {
+                '--pdfa-image-compression': gs_opts.pdfa_image_compression != 'auto',
+                '--ghostscript-jpeg-quality': gs_opts.jpeg_quality is not None,
+                '--ghostscript-jpeg-maxdpi': gs_opts.jpeg_maxdpi is not None,
+                f'--color-conversion-strategy {color_strategy}': color_strategy
+                not in ('LeaveColorUnchanged', 'RGB'),
+            }.items()
+            if is_set
+        ]
+        if not gs_only:
+            return
+        if options.pdfa_backend == 'internal':
+            raise BadArgsError(
+                f"{', '.join(gs_only)} "
+                f"{'has' if len(gs_only) == 1 else 'have'} no effect with "
+                "--pdfa-backend internal"
+            )
+        if options.pdfa_backend == 'auto' and (
+            options.output_type == 'auto' or options.output_type.startswith('pdfa')
+        ):
+            log.info(
+                "%s requires Ghostscript; using --pdfa-backend ghostscript",
+                gs_only[0],
+            )
+            options.pdfa_backend = 'ghostscript'
 
     def _handle_deprecated_pdf_renderer(self, options: OcrOptions) -> None:
         """Handle deprecated pdf_renderer values by redirecting to fpdf2."""

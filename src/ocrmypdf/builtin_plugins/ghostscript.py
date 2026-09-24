@@ -121,7 +121,12 @@ class GhostscriptOptions(BaseModel):
             type=str,
             choices=[ccs.value for ccs in ColorConversionStrategy],
             default=ColorConversionStrategy.LEAVE_COLOR_UNCHANGED.value,
-            help="Set Ghostscript color conversion strategy",
+            help="Set Ghostscript color conversion strategy. OCRmyPDF does no "
+            "color conversion of its own: 'LeaveColorUnchanged' and 'RGB' are "
+            "met by any PDF/A pikepdf's validator approves, while 'CMYK', "
+            "'Gray' and 'UseDeviceIndependentColor' require Ghostscript and "
+            "select --pdfa-backend ghostscript (an error with --pdfa-backend "
+            "internal).",
         )
         gs.add_argument(
             '--pdfa-image-compression',
@@ -187,14 +192,23 @@ def add_options(parser):
 @hookimpl
 def check_options(options):
     """Check that the options are valid for this plugin."""
-    # Only require Ghostscript for pdfa* output types (not 'auto' or 'pdf')
-    # 'auto' mode uses best-effort PDF/A without Ghostscript fallback
-    if options.output_type.startswith('pdfa'):
+    # Ghostscript is required to make PDF/A for the pdfa* output types, unless
+    # the internal backend was chosen, and for --output-type auto only if the
+    # Ghostscript backend was chosen: auto otherwise degrades to a regular PDF
+    # when it cannot produce PDF/A.
+    if options.output_type == 'pdfa':
+        options.output_type = 'pdfa-2'
+    makes_pdfa = options.output_type == 'auto' or options.output_type.startswith('pdfa')
+    explicit_backend = options.pdfa_backend == 'ghostscript' and makes_pdfa
+    if explicit_backend or (
+        options.pdfa_backend != 'internal' and options.output_type.startswith('pdfa')
+    ):
         check_external_program(
             program='gs',
             package='ghostscript',
             version_checker=ghostscript.version,
             need_version='9.54',  # RHEL 9's version; Ubuntu 22.04 has 9.55
+            required_for='--pdfa-backend ghostscript' if explicit_backend else None,
         )
         gs_version = ghostscript.version()
         if gs_version in BLACKLISTED_GS_VERSIONS:
@@ -231,8 +245,6 @@ def check_options(options):
                 gs_version,
                 ghostscript.GS_TOUNICODE_MULTICHAR_FIXED,
             )
-        if options.output_type == 'pdfa':
-            options.output_type = 'pdfa-2'
 
     if (
         options.ghostscript.color_conversion_strategy
