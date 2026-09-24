@@ -9,6 +9,7 @@ import os
 import platform
 import re
 import sys
+import time
 import warnings
 from pathlib import Path
 from subprocess import CompletedProcess, run
@@ -106,6 +107,36 @@ def outtxt(tmp_path) -> Path:
     return tmp_path / 'out.txt'
 
 
+@pytest.fixture
+def no_speculative_pdfa(monkeypatch):
+    """Make PDF/A output go through Ghostscript, skipping speculative conversion.
+
+    For tests of the Ghostscript PDF/A path whose inputs would otherwise pass
+    speculative conversion.
+    """
+
+    def no_speculative(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr('ocrmypdf._pipeline.try_speculative_pdfa', no_speculative)
+
+
+@pytest.fixture
+def los_angeles_tz(monkeypatch):
+    """Make America/Los_Angeles the local time zone for the test.
+
+    Skipped where time.tzset() is unavailable (Windows), since the local zone
+    cannot be changed from within the process there.
+    """
+    if not hasattr(time, 'tzset'):
+        pytest.skip("time.tzset() is not available on this platform")
+    monkeypatch.setenv('TZ', 'America/Los_Angeles')
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
 @pytest.fixture(scope="function")
 def no_outpdf(tmp_path) -> Path:
     """Document fact that a test is not expected to produce output.
@@ -187,6 +218,35 @@ def run_ocrmypdf(
     )
     # print(p.stderr)
     return p
+
+
+def verapdf_failed_rules(path: Path, flavour: str) -> set[str] | None:
+    """Return the ids of the veraPDF rules *path* fails, or None without veraPDF.
+
+    Ids use pikepdf's form, e.g. ``ISO_19005_2:6.2.2-2``.
+    """
+    from ocrmypdf._exec import verapdf
+
+    if not verapdf.available():
+        return None
+    proc = run(
+        ['verapdf', '--format', 'json', '--flavour', flavour, str(path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    result = json.loads(proc.stdout)['report']['jobs'][0]['validationResult'][0]
+    return {
+        f"ISO_19005_{flavour[0]}:{rule['clause']}-{rule['testNumber']}"
+        for rule in result['details']['ruleSummaries']
+    }
+
+
+def assert_verapdf_agrees(path: Path, flavour: str) -> None:
+    """If veraPDF is installed, assert it also finds *path* compliant."""
+    failed = verapdf_failed_rules(path, flavour)
+    if failed is not None:
+        assert failed == set(), f"veraPDF {flavour} fails {sorted(failed)}"
 
 
 def first_page_dimensions(pdf: Path):

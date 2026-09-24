@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 import pikepdf
 import pytest
 from pikepdf import Name
+from pikepdf.pdfa import validate_written
 
 from ocrmypdf.exceptions import ExitCode, MissingDependencyError
 from ocrmypdf.pdfa import file_claims_pdfa, find_nonembedded_cid_fonts
@@ -217,10 +219,10 @@ def test_auto_downgrades_nonembedded_cid_font_to_pdf(nonembedded_cid_pdf, outpdf
         assert find_nonembedded_cid_fonts(pdf)
 
 
-def test_auto_falls_back_to_ghostscript_for_pdfa(resources, outpdf, monkeypatch):
+def test_auto_falls_back_to_ghostscript_for_pdfa(
+    resources, outpdf, no_speculative_pdfa
+):
     """Auto mode produces PDF/A via Ghostscript when the cheap path can't."""
-    # Force the speculative (veraPDF) path off so the fallback is exercised.
-    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
     check_ocrmypdf(
         resources / 'francais.pdf',
         outpdf,
@@ -232,9 +234,10 @@ def test_auto_falls_back_to_ghostscript_for_pdfa(resources, outpdf, monkeypatch)
     assert file_claims_pdfa(outpdf)['pass']
 
 
-def test_auto_outputs_pdf_when_ghostscript_unavailable(resources, outpdf, monkeypatch):
-    """With neither veraPDF nor Ghostscript, auto outputs a plain PDF."""
-    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
+def test_auto_outputs_pdf_when_ghostscript_unavailable(
+    resources, outpdf, monkeypatch, no_speculative_pdfa
+):
+    """If speculative PDF/A fails and there is no Ghostscript, output a plain PDF."""
     monkeypatch.setattr('ocrmypdf._exec.ghostscript.available', lambda: False)
     check_ocrmypdf(
         resources / 'francais.pdf',
@@ -248,10 +251,9 @@ def test_auto_outputs_pdf_when_ghostscript_unavailable(resources, outpdf, monkey
 
 
 def test_auto_degrades_when_ghostscript_cannot_make_pdfa(
-    resources, outpdf, monkeypatch
+    resources, outpdf, no_speculative_pdfa
 ):
     """If Ghostscript produces non-PDF/A output, auto keeps a plain PDF (no error)."""
-    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
     exitcode = run_ocrmypdf_api(
         resources / 'francais.pdf',
         outpdf,
@@ -267,11 +269,12 @@ def test_auto_degrades_when_ghostscript_cannot_make_pdfa(
     assert not file_claims_pdfa(outpdf)['pass']
 
 
-def test_auto_degrades_when_ghostscript_raises(resources, outpdf, monkeypatch):
+def test_auto_degrades_when_ghostscript_raises(
+    resources, outpdf, monkeypatch, no_speculative_pdfa
+):
     """A Ghostscript conversion exception in auto mode degrades to plain PDF."""
     from ocrmypdf.exceptions import ColorConversionNeededError
 
-    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
     monkeypatch.setattr('ocrmypdf._exec.ghostscript.available', lambda: True)
 
     def boom(*args, **kwargs):
@@ -318,9 +321,8 @@ def test_pdfa(resources, outpdf, optimize, pdfa_level):
         assert m.pdfa_status == f'{pdfa_level}B'
 
 
-def test_auto_force_ocr_declares_pdfa_without_verapdf(resources, outpdf, monkeypatch):
-    """Force mode without veraPDF gets real PDF/A declarations, not a bare PDF."""
-    monkeypatch.setattr('ocrmypdf._exec.verapdf.available', lambda: False)
+def test_auto_force_ocr_output_is_valid_pdfa(resources, outpdf, monkeypatch):
+    """Auto mode makes the force-ocr rebuild PDF/A without Ghostscript."""
 
     def no_ghostscript(*args, **kwargs):
         raise AssertionError('Ghostscript fallback should not be needed')
@@ -338,3 +340,311 @@ def test_auto_force_ocr_declares_pdfa_without_verapdf(resources, outpdf, monkeyp
     assert file_claims_pdfa(outpdf)['pass']
     with pikepdf.open(outpdf) as pdf:
         assert '/OutputIntents' in pdf.Root
+    report = validate_written(outpdf, '2b')
+    assert report.verdict == 'pass', report.summary()
+
+
+def test_auto_pdfa_without_ghostscript(resources, outpdf, monkeypatch):
+    """Without Ghostscript, auto still yields PDF/A if the validator approves."""
+    monkeypatch.setattr('ocrmypdf._exec.ghostscript.available', lambda: False)
+    check_ocrmypdf(
+        resources / 'francais.pdf',
+        outpdf,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+        '--output-type',
+        'auto',
+    )
+    assert file_claims_pdfa(outpdf)['pass']
+    report = validate_written(outpdf, '2b')
+    assert report.verdict == 'pass', report.summary()
+
+
+SPECULATIVE_OK = 'Speculative PDF/A conversion succeeded'
+GS_ONLY_OPTIONS = [
+    pytest.param(('--pdfa-image-compression', 'jpeg'), id='image-compression'),
+    pytest.param(('--ghostscript-jpeg-quality', '60'), id='jpeg-quality'),
+    pytest.param(('--ghostscript-jpeg-maxdpi', '150'), id='jpeg-maxdpi'),
+    pytest.param(('--color-conversion-strategy', 'CMYK'), id='color-cmyk'),
+    pytest.param(('--color-conversion-strategy', 'Gray'), id='color-gray'),
+    pytest.param(
+        ('--color-conversion-strategy', 'UseDeviceIndependentColor'),
+        id='color-device-independent',
+    ),
+]
+
+
+def _gs_option_label(gs_args):
+    """Name an option as the backend messages do, with the value if it matters."""
+    if gs_args[0] == '--color-conversion-strategy':
+        return ' '.join(gs_args)
+    return gs_args[0]
+
+
+def _options(*args):
+    from ocrmypdf.cli import get_options_and_plugins
+
+    return get_options_and_plugins([*args, 'a.pdf', 'b.pdf'])
+
+
+def _coordinate(options, plugin_manager):
+    from ocrmypdf._validation_coordinator import ValidationCoordinator
+
+    ValidationCoordinator(plugin_manager).validate_all_options(options)
+
+
+def _forbid_ghostscript_pdfa(monkeypatch):
+    def no_ghostscript(*args, **kwargs):
+        raise AssertionError('Ghostscript must not be used for PDF/A')
+
+    monkeypatch.setattr('ocrmypdf._pipeline.convert_to_pdfa', no_ghostscript)
+    monkeypatch.setattr('ocrmypdf._pipeline._ghostscript_pdfa_fallback', no_ghostscript)
+
+
+@pytest.mark.parametrize('backend', ['auto', 'ghostscript', 'internal'])
+def test_pdfa_backend_parsed(backend):
+    options, _pm = _options('--pdfa-backend', backend)
+    assert options.pdfa_backend == backend
+
+
+def test_pdfa_backend_default():
+    options, _pm = _options()
+    assert options.pdfa_backend == 'auto'
+
+
+def test_pdfa_backend_rejects_unknown_value():
+    from ocrmypdf._options import OcrOptions
+
+    with pytest.raises(ValueError, match='pdfa_backend'):
+        OcrOptions(input_file='a.pdf', output_file='b.pdf', pdfa_backend='acrobat')
+
+
+@pytest.mark.parametrize('gs_args', GS_ONLY_OPTIONS)
+def test_internal_backend_rejects_ghostscript_options(gs_args):
+    from ocrmypdf.exceptions import BadArgsError
+
+    options, pm = _options('--pdfa-backend', 'internal', *gs_args)
+    with pytest.raises(
+        BadArgsError,
+        match=f"{_gs_option_label(gs_args)} has no effect with --pdfa-backend internal",
+    ):
+        _coordinate(options, pm)
+
+
+@pytest.mark.parametrize('gs_args', GS_ONLY_OPTIONS)
+@pytest.mark.parametrize('output_type', ['auto', 'pdfa-2'])
+def test_auto_backend_switches_to_ghostscript(gs_args, output_type, caplog):
+    options, pm = _options('--output-type', output_type, *gs_args)
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        _coordinate(options, pm)
+    assert options.pdfa_backend == 'ghostscript'
+    assert (
+        f"{_gs_option_label(gs_args)} requires Ghostscript; using --pdfa-backend "
+        "ghostscript" in caplog.text
+    )
+
+
+@pytest.mark.parametrize('strategy', ['LeaveColorUnchanged', 'RGB'])
+@pytest.mark.parametrize('backend', ['auto', 'internal'])
+def test_internal_path_color_strategies_keep_backend(strategy, backend, caplog):
+    options, pm = _options(
+        '--output-type',
+        'pdfa',
+        '--pdfa-backend',
+        backend,
+        '--color-conversion-strategy',
+        strategy,
+    )
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        _coordinate(options, pm)
+    assert options.pdfa_backend == backend
+    assert 'requires Ghostscript' not in caplog.text
+
+
+def test_image_compression_applies_to_auto_output(caplog):
+    options, pm = _options('--output-type', 'auto', '--pdfa-image-compression', 'jpeg')
+    with caplog.at_level(logging.WARNING, logger='ocrmypdf'):
+        _coordinate(options, pm)
+    assert 'only applies' not in caplog.text
+
+
+def test_auto_backend_stays_auto_without_ghostscript_options():
+    options, pm = _options('--pdfa-image-compression', 'auto')
+    _coordinate(options, pm)
+    assert options.pdfa_backend == 'auto'
+
+
+def test_ghostscript_backend_requires_ghostscript(monkeypatch):
+    from ocrmypdf.builtin_plugins import ghostscript as gs_plugin
+
+    monkeypatch.setattr('ocrmypdf._exec.ghostscript.version', _raise_file_not_found)
+    options, _pm = _options('--output-type', 'auto', '--pdfa-backend', 'ghostscript')
+    with pytest.raises(MissingDependencyError):
+        gs_plugin.check_options(options)
+    # The default backend does not need Ghostscript for --output-type auto
+    options, _pm = _options('--output-type', 'auto')
+    gs_plugin.check_options(options)
+
+
+def test_internal_backend_does_not_require_ghostscript(monkeypatch):
+    from ocrmypdf.builtin_plugins import ghostscript as gs_plugin
+
+    monkeypatch.setattr('ocrmypdf._exec.ghostscript.version', _raise_file_not_found)
+    options, _pm = _options('--output-type', 'pdfa', '--pdfa-backend', 'internal')
+    gs_plugin.check_options(options)
+    assert options.output_type == 'pdfa-2'
+
+
+def _raise_file_not_found(*args, **kwargs):
+    raise FileNotFoundError('gs')
+
+
+def test_internal_backend_denial_fails(resources, outpdf, caplog, monkeypatch):
+    """blank.pdf has /OCProperties, which pikepdf's validator does not check."""
+    _forbid_ghostscript_pdfa(monkeypatch)
+    exitcode = run_ocrmypdf_api(
+        resources / 'blank.pdf',
+        outpdf,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+        '--output-type',
+        'pdfa',
+        '--pdfa-backend',
+        'internal',
+    )
+    assert exitcode == ExitCode.pdfa_conversion_failed
+    assert 'optional content (/OCProperties) is not supported' in caplog.text
+    assert 'PDF/A-2b: not_checked' in caplog.text
+    assert '--pdfa-backend internal' in caplog.text
+
+
+def test_internal_backend_denial_in_auto_outputs_pdf(
+    resources, outpdf, caplog, monkeypatch
+):
+    _forbid_ghostscript_pdfa(monkeypatch)
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'blank.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            'auto',
+            '--pdfa-backend',
+            'internal',
+        )
+    assert not file_claims_pdfa(outpdf)['pass']
+    assert 'outputting regular PDF' in caplog.text
+    # A construct the validator does not check is reported as such, not as
+    # a violation
+    assert "construct(s) pikepdf's validator does not check" in caplog.text
+
+
+def test_internal_backend_success(resources, outpdf, caplog, monkeypatch):
+    _forbid_ghostscript_pdfa(monkeypatch)
+    monkeypatch.setattr('ocrmypdf._exec.ghostscript.available', lambda: False)
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'francais.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            'pdfa-2',
+            '--pdfa-backend',
+            'internal',
+        )
+    assert SPECULATIVE_OK in caplog.text
+    assert file_claims_pdfa(outpdf)['pass']
+
+
+@pytest.mark.parametrize('output_type', ['pdfa', 'auto'])
+def test_ghostscript_backend_skips_speculative(resources, outpdf, caplog, output_type):
+    with caplog.at_level(logging.DEBUG, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'francais.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            output_type,
+            '--pdfa-backend',
+            'ghostscript',
+        )
+    assert 'Speculative PDF/A' not in caplog.text
+    assert file_claims_pdfa(outpdf)['pass']
+
+
+def test_auto_backend_with_ghostscript_jpeg_quality(resources, outpdf, caplog):
+    with caplog.at_level(logging.DEBUG, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'francais.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            'pdfa',
+            '--ghostscript-jpeg-quality',
+            '60',
+        )
+    assert (
+        "--ghostscript-jpeg-quality requires Ghostscript; using --pdfa-backend "
+        "ghostscript" in caplog.text
+    )
+    assert 'Speculative PDF/A' not in caplog.text
+    assert file_claims_pdfa(outpdf)['pass']
+
+
+def test_pdfa_backend_api_kwarg(resources, outpdf, monkeypatch):
+    import ocrmypdf
+    from ocrmypdf.exceptions import PdfaConversionFailedError
+
+    _forbid_ghostscript_pdfa(monkeypatch)
+    with pytest.raises(PdfaConversionFailedError, match='/OCProperties'):
+        ocrmypdf.ocr(
+            resources / 'blank.pdf',
+            outpdf,
+            output_type='pdfa',
+            pdfa_backend='internal',
+            plugins=['tests/plugins/tesseract_noop.py'],
+            progress_bar=False,
+        )
+
+
+def test_rgb_color_strategy_internal_backend(resources, outpdf, caplog, monkeypatch):
+    _forbid_ghostscript_pdfa(monkeypatch)
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        check_ocrmypdf(
+            resources / 'francais.pdf',
+            outpdf,
+            '--plugin',
+            'tests/plugins/tesseract_noop.py',
+            '--output-type',
+            'pdfa',
+            '--pdfa-backend',
+            'internal',
+            '--color-conversion-strategy',
+            'RGB',
+        )
+    assert SPECULATIVE_OK in caplog.text
+    assert file_claims_pdfa(outpdf)['pass']
+
+
+def test_rgb_color_strategy_api_takes_speculative_path(
+    resources, outpdf, caplog, monkeypatch
+):
+    """paperless-ngx passes color_conversion_strategy='RGB' on every PDF/A job."""
+    import ocrmypdf
+
+    _forbid_ghostscript_pdfa(monkeypatch)
+    with caplog.at_level(logging.INFO, logger='ocrmypdf'):
+        ocrmypdf.ocr(
+            resources / 'francais.pdf',
+            outpdf,
+            output_type='pdfa',
+            color_conversion_strategy='RGB',
+            plugins=['tests/plugins/tesseract_noop.py'],
+            progress_bar=False,
+        )
+    assert SPECULATIVE_OK in caplog.text
+    assert file_claims_pdfa(outpdf)['pass']

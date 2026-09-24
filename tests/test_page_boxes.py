@@ -18,15 +18,9 @@ wh_rect = [0, 0, 412, 592]
 
 neg_rect = [-100, -100, 512, 692]
 
-# When speculative PDF/A succeeds, MediaBox is preserved; Ghostscript would
-# normalize it to start at the origin. Which path ran is only known after the
-# pipeline runs (probing verapdf at collection time is unreliable on cold CI
-# runners), so resolve this expectation from the log.
-PDFA_DEPENDS = object()
-
 mediabox_testdata = [
-    ('fpdf2', 'pdfa', 'ccitt.pdf', None, inset_rect, PDFA_DEPENDS),
-    ('sandwich', 'pdfa', 'ccitt.pdf', None, inset_rect, PDFA_DEPENDS),
+    ('fpdf2', 'pdfa', 'ccitt.pdf', None, inset_rect, inset_rect),
+    ('sandwich', 'pdfa', 'ccitt.pdf', None, inset_rect, inset_rect),
     ('fpdf2', 'pdf', 'ccitt.pdf', None, inset_rect, inset_rect),
     ('sandwich', 'pdf', 'ccitt.pdf', None, inset_rect, inset_rect),
     (
@@ -82,9 +76,10 @@ def test_media_box(
     with caplog.at_level(logging.INFO, logger='ocrmypdf'):
         check_ocrmypdf(outdir / 'cropped.pdf', outdir / 'processed.pdf', *args)
 
-    if crop_expected is PDFA_DEPENDS:
-        speculative = 'Speculative PDF/A conversion succeeded' in caplog.text
-        crop_expected = inset_rect if speculative else wh_rect
+    if output_type == 'pdfa' and not mode:
+        # Speculative PDF/A preserves the MediaBox; Ghostscript would
+        # normalize it to start at the origin.
+        assert 'Speculative PDF/A conversion succeeded' in caplog.text
 
     with pikepdf.open(outdir / 'processed.pdf') as pdf:
         page = pdf.pages[0]
