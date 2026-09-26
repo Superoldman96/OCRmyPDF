@@ -68,6 +68,16 @@ def test_repair_docinfo_nuls_undecodable_key(caplog):
     assert 'malformed DocumentInfo' in caplog.text
 
 
+@pytest.mark.parametrize('conversion_mode', ['explicit', 'implicit'])
+def test_repair_docinfo_nuls_removes_nuls(conversion_mode):
+    pdf = pikepdf.Pdf.new(conversion_mode=conversion_mode)
+    pdf.docinfo[pikepdf.Name.Title] = pikepdf.String(b'Title with nul\x00')
+    pdf.docinfo[pikepdf.Name.Author] = pikepdf.String(b'Clean')
+    assert repair_docinfo_nuls(pdf) is True
+    assert bytes(pdf.docinfo[pikepdf.Name.Title]) == b'Title with nul'
+    assert bytes(pdf.docinfo[pikepdf.Name.Author]) == b'Clean'
+
+
 def test_repair_docinfo_nuls_undecodable_key_real_file(resources):
     """Opening a real file with a Latin-1 DocumentInfo key must not crash."""
     with pikepdf.open(resources / 'docinfo_latin1_key.pdf') as pdf:

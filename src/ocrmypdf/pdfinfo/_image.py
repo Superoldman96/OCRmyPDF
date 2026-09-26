@@ -21,12 +21,7 @@ from pikepdf import (
     UnsupportedImageTypeError,
 )
 
-from ocrmypdf.helpers import (
-    RESOURCES_XOBJECT,
-    Resolution,
-    pikepdf_get_dict,
-    pikepdf_get_int,
-)
+from ocrmypdf.helpers import RESOURCES_XOBJECT, Resolution
 from ocrmypdf.pdfinfo._contentstream import (
     ContentsInfo,
     TextMarker,
@@ -97,8 +92,8 @@ class ImageInfo:
             # itself. Some PDF writers use this to create a grayscale stencil
             # mask. For our purposes, the effective size is the size of the
             # larger component (image or smask).
-            self._width = max(pikepdf_get_int(smask, Name.Width), self._width)
-            self._height = max(pikepdf_get_int(smask, Name.Height), self._height)
+            self._width = max(smask.get_int(Name.Width, 0, coerce=True), self._width)
+            self._height = max(smask.get_int(Name.Height, 0, coerce=True), self._height)
         if (mask := pim.obj.get(Name.Mask, None)) is not None and isinstance(
             mask, Stream | Dictionary
         ):
@@ -106,8 +101,8 @@ class ImageInfo:
             # /Mask can be a Stream or an Array. If it's a Stream,
             # use its /Width and /Height if they are larger than the main
             # image's.
-            self._width = max(pikepdf_get_int(mask, Name.Width), self._width)
-            self._height = max(pikepdf_get_int(mask, Name.Height), self._height)
+            self._width = max(mask.get_int(Name.Width, 0, coerce=True), self._width)
+            self._height = max(mask.get_int(Name.Height, 0, coerce=True), self._height)
 
         # If /ImageMask is true, then this image is a stencil mask
         # (Images that draw with this stencil mask will have a reference to
@@ -289,7 +284,7 @@ def _image_xobjects(container) -> Iterator[tuple[Object, str]]:
     since the object does not know its own name.
 
     """
-    for key, candidate in pikepdf_get_dict(container, RESOURCES_XOBJECT).items():
+    for key, candidate in (container.get_dict(RESOURCES_XOBJECT) or {}).items():
         if candidate is None or Name.Subtype not in candidate:
             continue
         if candidate[Name.Subtype] == Name.Image:
@@ -333,9 +328,7 @@ def _find_form_xobject_images(pdf: Pdf, container: Object, contentsinfo: Content
     The container may be a page, or a parent Form XObject.
 
     """
-    xobjs = pikepdf_get_dict(container, RESOURCES_XOBJECT).as_dict()
-    for xobj in xobjs:
-        candidate = xobjs[xobj]
+    for xobj, candidate in (container.get_dict(RESOURCES_XOBJECT) or {}).items():
         if candidate is None or candidate.get(Name.Subtype) != Name.Form:
             continue
 

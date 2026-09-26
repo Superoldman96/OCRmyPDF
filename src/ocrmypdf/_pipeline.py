@@ -192,7 +192,7 @@ def triage(
                     "input file is a PDF, not an image."
                 )
             try:
-                with pikepdf.open(input_file) as pdf:
+                with pikepdf.open(input_file, conversion_mode='explicit') as pdf:
                     repairs_by_page = {
                         n: repairs
                         for n, page in enumerate(pdf.pages)
@@ -967,7 +967,7 @@ def fix_pagepdf_boxes(
     or express invalid rectangles. We merely pass the boxes, producing a
     transformation equivalent to the change made by constructing a new page image.
     """
-    with pikepdf.open(infile) as pdf:
+    with pikepdf.open(infile, conversion_mode='explicit') as pdf:
         for page in pdf.pages:
             log.debug(
                 f"initial mediabox={page.MediaBox} and pageinfo "
@@ -1025,7 +1025,7 @@ def convert_to_pdfa(input_pdf: Path, input_ps_stub: Path, context: PdfContext) -
     # NULs in DocumentInfo seem to be common since older Acrobats included them.
     # pikepdf can deal with this, but we make the world a better place by
     # stamping them out as soon as possible.
-    with pikepdf.open(input_pdf) as pdf_file:
+    with pikepdf.open(input_pdf, conversion_mode='explicit') as pdf_file:
         # Ghostscript would substitute and re-embed any non-embedded CID font to
         # satisfy PDF/A, corrupting CJK text (e.g. an Acrobat OCR layer) in the
         # process. Refuse rather than silently damage the user's text layer.
@@ -1188,7 +1188,7 @@ def _auto_keeps_regular_pdf(input_pdf: Path) -> bool:
     text layer, 'auto' downgrades to a regular PDF (the same outcome as any
     other case where best-effort PDF/A is not achievable).
     """
-    with pikepdf.open(input_pdf) as pdf_file:
+    with pikepdf.open(input_pdf, conversion_mode='explicit') as pdf_file:
         nonembedded = find_nonembedded_cid_fonts(pdf_file)
     if nonembedded:
         log.info(

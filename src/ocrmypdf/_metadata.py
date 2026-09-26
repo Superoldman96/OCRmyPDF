@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import pikepdf
 from pikepdf import Dictionary, Name, Pdf
 from pikepdf import __version__ as PIKEPDF_VERSION
 from pikepdf.models.metadata import PdfMetadata, decode_pdf_date, encode_pdf_date
@@ -142,8 +143,9 @@ def repair_docinfo_nuls(pdf):
         if not isinstance(pdf.docinfo, Dictionary):
             raise TypeError("DocumentInfo is not a dictionary")
         for k, v in pdf.docinfo.items():
-            if isinstance(v, str) and b'\x00' in bytes(v):
-                pdf.docinfo[k] = bytes(v).replace(b'\x00', b'')
+            raw = pikepdf.as_bytes(v)
+            if raw is not None and b'\x00' in raw:
+                pdf.docinfo[k] = raw.replace(b'\x00', b'')
                 modified = True
     except (TypeError, UnicodeDecodeError):
         # TypeError: DocumentInfo is not a dictionary, or its items are
@@ -285,8 +287,8 @@ def metadata_fixup(
 
     pbar_class = context.plugin_manager.get_progressbar_class()
     with (
-        Pdf.open(context.origin) as original,
-        Pdf.open(working_file) as pdf,
+        Pdf.open(context.origin, conversion_mode='explicit') as original,
+        Pdf.open(working_file, conversion_mode='explicit') as pdf,
         MetadataProgress(pbar_class, options.progress_bar) as pbar,
     ):
         docinfo = get_docinfo(original, context)

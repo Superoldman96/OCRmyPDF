@@ -199,11 +199,12 @@ def _interpret_contents(
         elif operator == 'cm':
             try:
                 ctm = Matrix(operands) @ ctm
-            except ValueError:
-                # A 'cm' with the wrong number of operands means the content
-                # stream is malformed - typically a producer emitted a broken
-                # real number such as '0.000-50131235', which the parser reads
-                # as an operator that swallows the operands that precede it.
+            except (ValueError, TypeError):
+                # A 'cm' with the wrong number of operands (ValueError) or a
+                # non-numeric one (TypeError) means the content stream is
+                # malformed - typically a producer emitted a broken real number
+                # such as '0.000-50131235', which the parser reads as an
+                # operator that swallows the operands that precede it.
                 # Viewers tolerate this, so ignore the operator and carry on
                 # with the transformation matrix we have.
                 warn("PDF content stream has a malformed 'cm' - PDF may be malformed")

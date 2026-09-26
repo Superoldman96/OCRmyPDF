@@ -344,7 +344,7 @@ def do_get_pdfinfo(pdf_path: Path, executor: Executor, options) -> PdfInfo:
     if isinstance(check_pages, str):
         from ocrmypdf._options import _pages_from_ranges
 
-        with Pdf.open(pdf_path) as pdf:
+        with Pdf.open(pdf_path, conversion_mode='explicit') as pdf:
             total_pages = len(pdf.pages)
         check_pages = _pages_from_ranges(check_pages, total_pages=total_pages)
         options.pages = check_pages
@@ -483,7 +483,7 @@ def postprocess(
     Repairs broken annotations, then produces the output file of the
     requested type with `finish_output_pdf`.
     """
-    with Pdf.open(pdf_file) as pdf:
+    with Pdf.open(pdf_file, conversion_mode='explicit') as pdf:
         fix_annots = context.get_path('fix_annots.pdf')
         if remove_broken_goto_annotations(pdf):
             pdf.save(fix_annots)

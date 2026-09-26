@@ -13,9 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pikepdf
-from pikepdf import Name, Object, Pdf
-
-from ocrmypdf.helpers import pikepdf_get_dict
+from pikepdf import Name, NamePath, Object, Pdf
 
 if TYPE_CHECKING:
     from pikepdf.pdfa import Flavour, PrepareResult, Report
@@ -122,7 +120,7 @@ def file_claims_pdfa(filename: Path):
     This only checks if the XMP metadata contains a PDF/A marker. It does not
     do full PDF/A validation.
     """
-    with pikepdf.open(filename) as pdf:
+    with pikepdf.open(filename, conversion_mode='explicit') as pdf:
         pdfmeta = pdf.open_metadata()
         if not pdfmeta.pdfa_status:
             return {
@@ -147,10 +145,10 @@ def _cid_font_is_embedded(type0_font: Object) -> bool:
     """Return True if a Type0 font's CID descendant carries embedded glyphs."""
     for descendant in type0_font.get(Name.DescendantFonts, []):
         # A malformed PDF may store a non-dictionary here; `key in descriptor`
-        # raises on those, so reduce anything that is not a dictionary to an
-        # empty one before probing it.
-        descriptor = pikepdf_get_dict(descendant, Name.FontDescriptor)
-        if any(
+        # raises on those, so get_dict reduces anything that is not a
+        # dictionary to None before we probe it.
+        descriptor = descendant.get_dict(Name.FontDescriptor)
+        if descriptor is not None and any(
             key in descriptor for key in (Name.FontFile, Name.FontFile2, Name.FontFile3)
         ):
             return True
@@ -180,14 +178,15 @@ def find_nonembedded_cid_fonts(pdf: Pdf) -> set[str]:
     """
     found: set[str] = set()
 
-    def scan_resources(resources: Object, depth: int = 0) -> None:
+    def scan_resources(container: Object, depth: int = 0) -> None:
         if depth > 10:
             return
-        # A well-formed PDF stores dictionaries under /Font and /XObject, but a
-        # malformed one (common in OCR workloads) may store an array, a name, or
-        # another non-dictionary object. pikepdf_get_dict reduces every one of
-        # those to "no fonts" rather than let the scan crash (issue #1713).
-        for font in pikepdf_get_dict(resources, Name.Font).as_dict().values():
+        # A well-formed PDF stores dictionaries under /Resources, /Font and
+        # /XObject, but a malformed one (common in OCR workloads) may store an
+        # array, a name, or another non-dictionary object. get_dict reduces
+        # every one of those to "no fonts" rather than let the scan crash
+        # (issue #1713).
+        for font in (container.get_dict(NamePath.Resources.Font) or {}).values():
             try:
                 if font.get(Name.Subtype) != Name.Type0:
                     continue
@@ -206,12 +205,12 @@ def find_nonembedded_cid_fonts(pdf: Pdf) -> set[str]:
                     found.add(basefont.lstrip('/'))
             except (AttributeError, TypeError, KeyError):
                 continue
-        for xobj in pikepdf_get_dict(resources, Name.XObject).as_dict().values():
+        for xobj in (container.get_dict(NamePath.Resources.XObject) or {}).values():
             if xobj.get(Name.Subtype) == Name.Form:
-                scan_resources(pikepdf_get_dict(xobj, Name.Resources), depth + 1)
+                scan_resources(xobj, depth + 1)
 
     for page in pdf.pages:
-        scan_resources(pikepdf_get_dict(page.obj, Name.Resources))
+        scan_resources(page.obj)
     return found
 
 
@@ -336,7 +335,7 @@ def speculative_pdfa_conversion(
     from pikepdf.pdfa import save
 
     flavour = output_type_to_flavour(output_type)
-    with Pdf.open(input_file) as pdf:
+    with Pdf.open(input_file, conversion_mode='explicit') as pdf:
         report = save(pdf, output_file, flavour, output_intent='sRGB')
     log_prepare_result(report.prepared)
 

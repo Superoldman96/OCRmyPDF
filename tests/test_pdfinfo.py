@@ -551,6 +551,18 @@ def test_malformed_number_token_issue1054():
     assert info.xobject_settings[0].shorthand == (381, 0, 0, 381, 0, 0)
 
 
+@pytest.mark.parametrize('conversion_mode', ['explicit', 'implicit'])
+def test_cm_with_non_numeric_operand(conversion_mode):
+    """A ``cm`` with six operands, one of them not a number, is ignored."""
+    p = pikepdf.Pdf.new(conversion_mode=conversion_mode)
+
+    stream = pikepdf.Stream(p, b'q 381 0 0 381 0 0 cm q 1 0 0 /Oops 0 0 cm /Im0 Do Q Q')
+    with pytest.warns(UserWarning, match="malformed"):
+        info = _interpret_contents(stream)
+    assert len(info.xobject_settings) == 1
+    assert info.xobject_settings[0].shorthand == (381, 0, 0, 381, 0, 0)
+
+
 def test_do_without_operand():
     """A ``Do`` whose name operand was stolen must not raise."""
     p = pikepdf.Pdf.new()
