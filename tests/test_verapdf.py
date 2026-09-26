@@ -16,9 +16,8 @@ from pikepdf import Name
 from ocrmypdf._exec import verapdf
 from ocrmypdf.exceptions import MissingDependencyError
 from ocrmypdf.pdfa import (
-    _pdfa_part_conformance,
-    add_pdfa_metadata,
-    add_srgb_output_intent,
+    output_type_to_flavour,
+    prepare_pdfa,
     speculative_pdfa_conversion,
 )
 
@@ -137,69 +136,43 @@ class TestValidateFailures:
         assert result.valid is True
 
 
-class TestPdfaPartConformance:
-    """Tests for _pdfa_part_conformance helper."""
+class TestOutputTypeToFlavour:
+    """Tests for output_type_to_flavour helper."""
 
-    def test_pdfa_part_conformance(self):
-        assert _pdfa_part_conformance('pdfa') == ('2', 'B')
-        assert _pdfa_part_conformance('pdfa-1') == ('1', 'B')
-        assert _pdfa_part_conformance('pdfa-2') == ('2', 'B')
-        assert _pdfa_part_conformance('pdfa-3') == ('3', 'B')
-        # Unknown should default to 2B
-        assert _pdfa_part_conformance('unknown') == ('2', 'B')
+    def test_output_type_to_flavour(self):
+        assert output_type_to_flavour('pdfa') == '2b'
+        assert output_type_to_flavour('pdfa-1') == '1b'
+        assert output_type_to_flavour('pdfa-2') == '2b'
+        assert output_type_to_flavour('pdfa-3') == '3b'
+        # 'auto' and unknown values make PDF/A-2b
+        assert output_type_to_flavour('auto') == '2b'
+        assert output_type_to_flavour('unknown') == '2b'
 
 
-class TestAddPdfaMetadata:
-    """Tests for add_pdfa_metadata function."""
+class TestPreparePdfa:
+    """Tests for prepare_pdfa, which declares PDF/A after metadata edits."""
 
-    def test_add_pdfa_metadata(self, tmp_path):
-        """Test adding PDF/A XMP metadata."""
-        test_pdf = tmp_path / 'test.pdf'
+    def test_declares_pdfa_and_keeps_output_intents(self):
         with pikepdf.new() as pdf:
             pdf.add_blank_page()
-            pdf.save(test_pdf)
-
-        with pikepdf.open(test_pdf, allow_overwriting_input=True) as pdf:
-            add_pdfa_metadata(pdf, '2', 'B')
+            intent = pdf.make_indirect(
+                pikepdf.Dictionary(
+                    Type=Name.OutputIntent,
+                    S=Name.GTS_PDFA1,
+                    OutputConditionIdentifier='Custom',
+                )
+            )
+            pdf.Root.OutputIntents = pikepdf.Array([intent])
+            prepare_pdfa(pdf, 'pdfa-3')
+            assert pdf.Root.OutputIntents[0].OutputConditionIdentifier == 'Custom'
             with pdf.open_metadata() as meta:
-                assert meta.pdfa_status == '2B'
-            pdf.save(test_pdf)
+                assert meta.pdfa_status == '3B'
 
-        # Verify it persists after save
-        with pikepdf.open(test_pdf) as pdf, pdf.open_metadata() as meta:
-            assert meta.pdfa_status == '2B'
-
-
-class TestAddSrgbOutputIntent:
-    """Tests for add_srgb_output_intent function."""
-
-    def test_add_srgb_output_intent(self, tmp_path):
-        """Test adding sRGB OutputIntent to a PDF."""
-        test_pdf = tmp_path / 'test.pdf'
+    def test_idempotent(self):
         with pikepdf.new() as pdf:
             pdf.add_blank_page()
-            pdf.save(test_pdf)
-
-        with pikepdf.open(test_pdf, allow_overwriting_input=True) as pdf:
-            add_srgb_output_intent(pdf)
-            assert Name.OutputIntents in pdf.Root
-            assert len(pdf.Root.OutputIntents) == 1
-            intent = pdf.Root.OutputIntents[0]
-            assert str(intent.get(Name.OutputConditionIdentifier)) == 'sRGB'
-            pdf.save(test_pdf)
-
-    def test_add_srgb_output_intent_idempotent(self, tmp_path):
-        """Test that adding OutputIntent twice doesn't duplicate."""
-        test_pdf = tmp_path / 'test.pdf'
-        with pikepdf.new() as pdf:
-            pdf.add_blank_page()
-            pdf.save(test_pdf)
-
-        with pikepdf.open(test_pdf, allow_overwriting_input=True) as pdf:
-            add_srgb_output_intent(pdf)
-            add_srgb_output_intent(pdf)  # Second call should be a no-op
-            assert len(pdf.Root.OutputIntents) == 1
-            pdf.save(test_pdf)
+            prepare_pdfa(pdf, 'pdfa-2')
+            assert not prepare_pdfa(pdf, 'pdfa-2').changed
 
 
 class TestSpeculativePdfaConversion:
@@ -210,10 +183,11 @@ class TestSpeculativePdfaConversion:
         input_pdf = resources / 'graph.pdf'
         output_pdf = tmp_path / 'output.pdf'
 
-        result = speculative_pdfa_conversion(input_pdf, output_pdf, 'pdfa-2')
+        report = speculative_pdfa_conversion(input_pdf, output_pdf, 'pdfa-2')
 
-        assert result.exists()
-        with pikepdf.open(result) as pdf:
+        assert report.verdict == 'pass'
+        assert output_pdf.exists()
+        with pikepdf.open(output_pdf) as pdf:
             assert Name.OutputIntents in pdf.Root
             with pdf.open_metadata() as meta:
                 assert meta.pdfa_status == '2B'
@@ -239,18 +213,11 @@ class TestVerapdfIntegration:
     """Integration tests requiring verapdf."""
 
     def test_speculative_conversion_validation(self, tmp_path, resources):
-        """Test that speculative conversion can be validated by verapdf.
-
-        Note: Most test PDFs will fail validation because they have issues
-        that require Ghostscript to fix (fonts, colorspaces, etc.). This test
-        verifies the validation pipeline works, not that all PDFs pass.
-        """
+        """A speculative conversion that pikepdf approved passes veraPDF."""
         input_pdf = resources / 'graph.pdf'
         output_pdf = tmp_path / 'output.pdf'
 
         speculative_pdfa_conversion(input_pdf, output_pdf, 'pdfa-2')
 
-        # The converted file can be validated (even if it fails)
         result = verapdf.validate(output_pdf, '2b')
-        assert isinstance(result.valid, bool)
-        assert isinstance(result.failed_rules, int)
+        assert result.valid, result

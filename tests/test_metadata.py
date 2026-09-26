@@ -14,7 +14,11 @@ import pytest
 from pikepdf.models.metadata import decode_pdf_date
 
 from ocrmypdf._jobcontext import PdfContext
-from ocrmypdf._metadata import metadata_fixup, repair_docinfo_nuls
+from ocrmypdf._metadata import (
+    assume_local_time_zone,
+    metadata_fixup,
+    repair_docinfo_nuls,
+)
 from ocrmypdf._pipeline import convert_to_pdfa
 from ocrmypdf.api import setup_plugin_infrastructure
 from ocrmypdf.cli import get_options_and_plugins
@@ -62,6 +66,16 @@ def test_repair_docinfo_nuls_undecodable_key(caplog):
         result = repair_docinfo_nuls(pdf)
     assert result is False
     assert 'malformed DocumentInfo' in caplog.text
+
+
+@pytest.mark.parametrize('conversion_mode', ['explicit', 'implicit'])
+def test_repair_docinfo_nuls_removes_nuls(conversion_mode):
+    pdf = pikepdf.Pdf.new(conversion_mode=conversion_mode)
+    pdf.docinfo[pikepdf.Name.Title] = pikepdf.String(b'Title with nul\x00')
+    pdf.docinfo[pikepdf.Name.Author] = pikepdf.String(b'Clean')
+    assert repair_docinfo_nuls(pdf) is True
+    assert bytes(pdf.docinfo[pikepdf.Name.Title]) == b'Title with nul'
+    assert bytes(pdf.docinfo[pikepdf.Name.Author]) == b'Clean'
 
 
 def test_repair_docinfo_nuls_undecodable_key_real_file(resources):
@@ -220,6 +234,9 @@ def test_creation_date_preserved(output_type, resources, infile, outpdf):
         else:
             # We expect that the creation date stayed the same
             date_before = decode_pdf_date(str(before['/CreationDate']))
+            if date_before.tzinfo is None:
+                # A date without a time zone is taken to be local time
+                date_before = date_before.astimezone()
             date_after = decode_pdf_date(str(after['/CreationDate']))
             assert seconds_between_dates(date_before, date_after) < 1000
 
@@ -437,3 +454,65 @@ def test_missing_docinfo(resources, outpdf):
         Path('tests/plugins/tesseract_noop.py'),
     )
     assert result == ExitCode.ok
+
+
+@pytest.mark.parametrize(
+    'pdf_date, expected, changed',
+    [
+        ('D:20160119123847', "D:20160119123847-08'00", True),
+        ('20160719123847', "D:20160719123847-07'00", True),
+        ("D:20160119123847+05'30'", "D:20160119123847+05'30'", False),
+        ('D:20160119123847Z', 'D:20160119123847Z', False),
+        ('not a date', 'not a date', False),
+        ('', '', False),
+    ],
+)
+def test_assume_local_time_zone(los_angeles_tz, pdf_date, expected, changed):
+    assert assume_local_time_zone(pdf_date) == (expected, changed)
+
+
+@pytest.mark.parametrize('output_type', ['pdf', 'pdfa-1', 'pdfa-2'])
+def test_unzoned_creation_date_assumes_local_zone(
+    los_angeles_tz, resources, outpdf, caplog, output_type
+):
+    input_file = resources / 'ccitt.pdf'
+    with pikepdf.open(input_file) as pdf:
+        assert decode_pdf_date(str(pdf.docinfo.CreationDate)).tzinfo is None
+
+    exitcode = run_ocrmypdf_api(
+        input_file,
+        outpdf,
+        '--output-type',
+        output_type,
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.ok, caplog.text
+
+    with pikepdf.open(outpdf) as pdf:
+        assert str(pdf.docinfo.CreationDate) == "D:20160119123847-08'00"
+        meta = pdf.open_metadata()
+        assert meta['xmp:CreateDate'] == '2016-01-19T12:38:47-08:00'
+
+    warnings_ = [
+        r
+        for r in caplog.records
+        if r.levelname == 'WARNING' and 'has no time zone' in r.getMessage()
+    ]
+    assert len(warnings_) == 1, caplog.text
+    message = warnings_[0].getMessage()
+    assert 'UTC-08:00' in message
+    assert 'TZ=' in message
+
+
+def test_zoned_creation_date_no_warning(resources, outpdf, caplog):
+    exitcode = run_ocrmypdf_api(
+        resources / 'graph.pdf',
+        outpdf,
+        '--output-type',
+        'pdf',
+        '--plugin',
+        'tests/plugins/tesseract_noop.py',
+    )
+    assert exitcode == ExitCode.ok, caplog.text
+    assert 'has no time zone' not in caplog.text

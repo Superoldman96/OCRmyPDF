@@ -10,9 +10,10 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import pikepdf
 from pikepdf import Dictionary, Name, Pdf
 from pikepdf import __version__ as PIKEPDF_VERSION
-from pikepdf.models.metadata import PdfMetadata, encode_pdf_date
+from pikepdf.models.metadata import PdfMetadata, decode_pdf_date, encode_pdf_date
 
 from ocrmypdf._defaults import PROGRAM_NAME
 from ocrmypdf._jobcontext import PdfContext
@@ -20,6 +21,52 @@ from ocrmypdf._version import __version__ as OCRMYPF_VERSION
 from ocrmypdf.languages import iso_639_2_from_3
 
 log = logging.getLogger(__name__)
+
+
+def _attach_local_time_zone(naive: dt.datetime) -> dt.datetime | None:
+    """Return *naive* with the local time zone attached, or None on failure.
+
+    ``astimezone()`` interprets a naive datetime as local time. Some platforms
+    cannot convert dates outside the range of the C library's time functions,
+    such as dates before 1970 on Windows.
+    """
+    try:
+        return naive.astimezone()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _utc_offset_label(when: dt.datetime) -> str:
+    """Return the UTC offset of an aware datetime as text, e.g. ``UTC-08:00``."""
+    offset = when.strftime('%z')
+    return f'UTC{offset[:3]}:{offset[3:5]}'
+
+
+def assume_local_time_zone(pdf_date: str) -> tuple[str, bool]:
+    """Attach the local time zone to a PDF date string that has none.
+
+    PDF dates may omit the time zone, in which case their relation to UTC is
+    unknown. PDF/A validators disagree on how to interpret such dates, so we
+    assume the date is local time on this machine.
+
+    Args:
+        pdf_date: A PDF date string, such as ``D:20160119123847``.
+
+    Returns:
+        The date string, with the local time zone attached if it had none,
+        and True if it was changed. Strings that are not PDF dates, or already
+        have a time zone, are returned unchanged.
+    """
+    try:
+        parsed = decode_pdf_date(pdf_date)
+    except (ValueError, TypeError):
+        return pdf_date, False
+    if parsed.tzinfo is not None:
+        return pdf_date, False
+    zoned = _attach_local_time_zone(parsed)
+    if zoned is None:
+        return pdf_date, False
+    return encode_pdf_date(zoned), True
 
 
 def get_docinfo(base_pdf: Pdf, context: PdfContext) -> dict[str, str]:
@@ -37,6 +84,18 @@ def get_docinfo(base_pdf: Pdf, context: PdfContext) -> dict[str, str]:
         k: from_document_info(k)
         for k in ('/Title', '/Author', '/Keywords', '/Subject', '/CreationDate')
     }
+    pdfmark['/CreationDate'], zone_assumed = assume_local_time_zone(
+        pdfmark['/CreationDate']
+    )
+    if zone_assumed:
+        created = decode_pdf_date(pdfmark['/CreationDate'])
+        log.warning(
+            "The input's creation date has no time zone; assumed the local "
+            "time zone (%s). If the document was created elsewhere, run with "
+            "the TZ environment variable set to that zone, e.g. "
+            "TZ=Europe/Berlin.",
+            _utc_offset_label(created),
+        )
     if options.title:
         pdfmark['/Title'] = options.title
     if options.author:
@@ -84,8 +143,9 @@ def repair_docinfo_nuls(pdf):
         if not isinstance(pdf.docinfo, Dictionary):
             raise TypeError("DocumentInfo is not a dictionary")
         for k, v in pdf.docinfo.items():
-            if isinstance(v, str) and b'\x00' in bytes(v):
-                pdf.docinfo[k] = bytes(v).replace(b'\x00', b'')
+            raw = pikepdf.as_bytes(v)
+            if raw is not None and b'\x00' in raw:
+                pdf.docinfo[k] = raw.replace(b'\x00', b'')
                 modified = True
     except (TypeError, UnicodeDecodeError):
         # TypeError: DocumentInfo is not a dictionary, or its items are
@@ -104,6 +164,29 @@ def should_linearize(working_file: Path, context: PdfContext) -> bool:
     """
     filesize = working_file.stat().st_size
     return filesize > (context.options.fast_web_view * 1_000_000)
+
+
+# DocInfo entries whose XMP equivalent is a language alternative
+_DOCINFO_LANGALT = {'/Title': 'dc:title', '/Subject': 'dc:description'}
+
+
+def _docinfo_to_copy(docinfo: dict[str, str], meta: PdfMetadata) -> dict[str, str]:
+    """Return the DocInfo entries that should be copied to XMP.
+
+    Empty entries are the input's missing ones, so they are not copied, which
+    would replace a value that is only in XMP with an empty one. A title or
+    subject equal to the XMP default is not copied either, to keep the
+    translations in the language alternative.
+    """
+    to_copy = {}
+    for key, value in docinfo.items():
+        if not value:
+            continue
+        xmp_key = _DOCINFO_LANGALT.get(key)
+        if xmp_key is not None and meta.get(xmp_key) == value:
+            continue
+        to_copy[key] = value
+    return to_copy
 
 
 def _fix_metadata(meta_original: PdfMetadata, meta_pdf: PdfMetadata):
@@ -176,7 +259,11 @@ class MetadataProgress:
 
 
 def metadata_fixup(
-    working_file: Path, context: PdfContext, pdf_save_settings: dict[str, Any]
+    working_file: Path,
+    context: PdfContext,
+    pdf_save_settings: dict[str, Any],
+    *,
+    pdfa_output_type: str | None = None,
 ) -> Path:
     """Fix certain metadata fields whether PDF or PDF/A.
 
@@ -184,14 +271,24 @@ def metadata_fixup(
 
     Also report on metadata in the input file that was not retained during
     conversion.
+
+    Args:
+        working_file: The PDF to fix.
+        context: The PDF context.
+        pdf_save_settings: Settings for saving the fixed PDF.
+        pdfa_output_type: If the working file is PDF/A, the PDF/A output type
+            ('pdfa', 'pdfa-1', 'pdfa-2' or 'pdfa-3') it conforms to. PDF/A
+            is then declared again with `pikepdf.pdfa.prepare`, which
+            rewrites the XMP packet in the canonical form pikepdf's validator
+            accepts and sets DocInfo to agree with it.
     """
     output_file = context.get_path('metafix.pdf')
     options = context.options
 
     pbar_class = context.plugin_manager.get_progressbar_class()
     with (
-        Pdf.open(context.origin) as original,
-        Pdf.open(working_file) as pdf,
+        Pdf.open(context.origin, conversion_mode='explicit') as original,
+        Pdf.open(working_file, conversion_mode='explicit') as pdf,
         MetadataProgress(pbar_class, options.progress_bar) as pbar,
     ):
         docinfo = get_docinfo(original, context)
@@ -202,7 +299,9 @@ def metadata_fixup(
             pdf.open_metadata() as meta_pdf,
         ):
             meta_pdf.load_from_docinfo(
-                docinfo, delete_missing=False, raise_failure=False
+                _docinfo_to_copy(docinfo, meta_pdf),
+                delete_missing=False,
+                raise_failure=False,
             )
             _fix_metadata(meta_original, meta_pdf)
             _unset_empty_metadata(meta_original, options)
@@ -211,6 +310,10 @@ def metadata_fixup(
             report_on_metadata(options, meta_missing)
 
         _set_language(pdf, options.languages)
-        pdf.save(output_file, progress=pbar, **pdf_save_settings)
+        if pdfa_output_type is not None:
+            from ocrmypdf.pdfa import prepare_pdfa
+
+            prepare_pdfa(pdf, pdfa_output_type)
+        pdf.save(output_file, **(pdf_save_settings | {'progress': pbar}))
 
     return output_file

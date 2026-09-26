@@ -762,12 +762,20 @@ Ghostscript is now optional. pypdfium2 can be used for PDF rasterization,
 and verapdf can validate speculative PDF/A conversion.
 :::
 
+:::{versionchanged} 17.13.0
+veraPDF is no longer used. Speculative PDF/A conversion is checked by
+pikepdf's PDF/A support (`pikepdf.pdfa`), so OCRmyPDF requires
+`pikepdf[pdfa]` 10.14 or newer, which brings in the jsonschema, referencing
+and fonttools Python packages.
+:::
+
 The following versions are required:
 
 - Python 3.11 or newer (3.12+ recommended; uv can install it for you)
 - Tesseract 4.1.1 or newer
 - One of: Ghostscript 9.54+ **or** pypdfium2 (Python package)
-- One of: Ghostscript 9.54+ **or** verapdf (for PDF/A output)
+- Ghostscript 9.54+ (for PDF/A output of files that cannot be converted
+  without it; optional)
 - fpdf2 2.8 or newer (Python package)
 - uharfbuzz (Python package)
 - fonts-noto or equivalent (system package, recommended)
@@ -786,7 +794,7 @@ conversions.
 | Feature | Option 1 | Option 2 | Notes |
 |---------|----------|----------|-------|
 | PDF rasterization | pypdfium2 (Python) | Ghostscript (binary) | pypdfium2 preferred when available |
-| PDF/A conversion | verapdf + pikepdf | Ghostscript | verapdf validates speculative conversion |
+| PDF/A conversion | pikepdf (`pikepdf.pdfa`) | Ghostscript | pikepdf validates speculative conversion |
 | Text rendering | fpdf2 + uharfbuzz | - | Required |
 | OCR | tesseract-ocr | `--ocr-engine none` | Can be skipped entirely |
 
@@ -794,7 +802,7 @@ conversions.
 tesseract-ocr + (pypdfium2 OR Ghostscript) + fpdf2 + uharfbuzz
 
 **Recommended installation:**
-tesseract-ocr + pypdfium2 + Ghostscript + verapdf + fpdf2 + uharfbuzz + fonts-noto + unpaper + pngquant + jbig2enc
+tesseract-ocr + pypdfium2 + Ghostscript + fpdf2 + uharfbuzz + fonts-noto + unpaper + pngquant + jbig2enc
 
 We recommend 64-bit versions of all software. (32-bit versions are not
 supported, although on Linux, they may still work.)
@@ -832,11 +840,13 @@ you install OCRmyPDF with uv, although some distribution packages of OCRmyPDF
 omit it. When present, it is preferred over Ghostscript due to better
 performance.
 
-**verapdf**, if present, enables fast speculative PDF/A conversion.
-OCRmyPDF attempts to create PDF/A by adding metadata and ICC profiles
-using pikepdf, then validates with verapdf. If validation passes,
-Ghostscript is skipped entirely. See your distribution's package manager
-or visit [verapdf.org](https://verapdf.org/).
+**Speculative PDF/A conversion** needs no extra software. OCRmyPDF creates
+PDF/A by adding metadata and an ICC profile using pikepdf, then checks the
+result with pikepdf's PDF/A validator. If validation passes, Ghostscript
+is skipped entirely; with `--pdfa-backend internal`, Ghostscript is never
+used for PDF/A. **veraPDF** is no longer used by OCRmyPDF itself; the
+test suite uses it, if installed, to cross-check pikepdf's validator
+(see [verapdf.org](https://verapdf.org/)).
 
 **jbig2enc**, if present, will be used to optimize the encoding of
 monochrome images. This can significantly reduce the file size of the

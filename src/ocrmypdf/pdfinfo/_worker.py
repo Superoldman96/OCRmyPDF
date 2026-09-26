@@ -36,7 +36,7 @@ def _pdf_pageinfo_sync_init(pdf: Pdf | None, infile: Path, pdfminer_loglevel):
 
     # If the pdf is not opened, open a copy for our worker process to use
     if pdf is None:
-        worker_pdf = Pdf.open(infile)
+        worker_pdf = Pdf.open(infile, conversion_mode='explicit')
 
         def on_process_close():
             worker_pdf.close()
@@ -52,7 +52,7 @@ def _pdf_pageinfo_sync_pdf(thread_pdf: Pdf | None, infile: Path):
     elif worker_pdf is not None:
         yield worker_pdf
     else:
-        with Pdf.open(infile) as pdf:
+        with Pdf.open(infile, conversion_mode='explicit') as pdf:
             yield pdf
 
 

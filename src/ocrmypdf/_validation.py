@@ -323,7 +323,7 @@ def report_output_file_size(
         input_size = Path(input_file).stat().st_size
     except FileNotFoundError:
         return  # Outputting to stream or something
-    with pikepdf.open(output_file) as p:
+    with pikepdf.open(output_file, conversion_mode='explicit') as p:
         # Overhead constants obtained by estimating amount of data added by OCR
         # PDF/A conversion, and possible XMP metadata addition, with compression
         reasonable_overhead = file_overhead + page_overhead * len(p.pages)

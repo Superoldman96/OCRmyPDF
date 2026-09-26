@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2022 James R. Barlow
 # SPDX-License-Identifier: MPL-2.0
 
-"""Utilities for PDF/A production and confirmation with Ghostscript."""
+"""Utilities for PDF/A production, with pikepdf or Ghostscript."""
 
 from __future__ import annotations
 
@@ -10,11 +10,13 @@ import logging
 from collections.abc import Iterator
 from importlib.resources import files as package_files
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pikepdf
-from pikepdf import Array, Dictionary, Name, Object, Pdf, Stream
+from pikepdf import Name, NamePath, Object, Pdf
 
-from ocrmypdf.helpers import pikepdf_get_dict
+if TYPE_CHECKING:
+    from pikepdf.pdfa import Flavour, PrepareResult, Report
 
 log = logging.getLogger(__name__)
 
@@ -118,7 +120,7 @@ def file_claims_pdfa(filename: Path):
     This only checks if the XMP metadata contains a PDF/A marker. It does not
     do full PDF/A validation.
     """
-    with pikepdf.open(filename) as pdf:
+    with pikepdf.open(filename, conversion_mode='explicit') as pdf:
         pdfmeta = pdf.open_metadata()
         if not pdfmeta.pdfa_status:
             return {
@@ -143,10 +145,10 @@ def _cid_font_is_embedded(type0_font: Object) -> bool:
     """Return True if a Type0 font's CID descendant carries embedded glyphs."""
     for descendant in type0_font.get(Name.DescendantFonts, []):
         # A malformed PDF may store a non-dictionary here; `key in descriptor`
-        # raises on those, so reduce anything that is not a dictionary to an
-        # empty one before probing it.
-        descriptor = pikepdf_get_dict(descendant, Name.FontDescriptor)
-        if any(
+        # raises on those, so get_dict reduces anything that is not a
+        # dictionary to None before we probe it.
+        descriptor = descendant.get_dict(Name.FontDescriptor)
+        if descriptor is not None and any(
             key in descriptor for key in (Name.FontFile, Name.FontFile2, Name.FontFile3)
         ):
             return True
@@ -176,14 +178,15 @@ def find_nonembedded_cid_fonts(pdf: Pdf) -> set[str]:
     """
     found: set[str] = set()
 
-    def scan_resources(resources: Object, depth: int = 0) -> None:
+    def scan_resources(container: Object, depth: int = 0) -> None:
         if depth > 10:
             return
-        # A well-formed PDF stores dictionaries under /Font and /XObject, but a
-        # malformed one (common in OCR workloads) may store an array, a name, or
-        # another non-dictionary object. pikepdf_get_dict reduces every one of
-        # those to "no fonts" rather than let the scan crash (issue #1713).
-        for font in pikepdf_get_dict(resources, Name.Font).as_dict().values():
+        # A well-formed PDF stores dictionaries under /Resources, /Font and
+        # /XObject, but a malformed one (common in OCR workloads) may store an
+        # array, a name, or another non-dictionary object. get_dict reduces
+        # every one of those to "no fonts" rather than let the scan crash
+        # (issue #1713).
+        for font in (container.get_dict(NamePath.Resources.Font) or {}).values():
             try:
                 if font.get(Name.Subtype) != Name.Type0:
                     continue
@@ -202,105 +205,119 @@ def find_nonembedded_cid_fonts(pdf: Pdf) -> set[str]:
                     found.add(basefont.lstrip('/'))
             except (AttributeError, TypeError, KeyError):
                 continue
-        for xobj in pikepdf_get_dict(resources, Name.XObject).as_dict().values():
+        for xobj in (container.get_dict(NamePath.Resources.XObject) or {}).values():
             if xobj.get(Name.Subtype) == Name.Form:
-                scan_resources(pikepdf_get_dict(xobj, Name.Resources), depth + 1)
+                scan_resources(xobj, depth + 1)
 
     for page in pdf.pages:
-        scan_resources(pikepdf_get_dict(page.obj, Name.Resources))
+        scan_resources(page.obj)
     return found
 
 
-def _load_srgb_icc_profile() -> bytes:
-    """Load the sRGB ICC profile from package data."""
-    return (package_files('ocrmypdf.data') / SRGB_ICC_PROFILE_NAME).read_bytes()
+# PDF/A flavour for each --output-type that produces PDF/A. 'auto' (and any
+# other value) makes PDF/A-2b, the same default as Ghostscript conversion.
+_OUTPUT_TYPE_FLAVOURS = {
+    'pdfa': '2b',
+    'pdfa-1': '1b',
+    'pdfa-2': '2b',
+    'pdfa-3': '3b',
+}
 
 
-def _pdfa_part_conformance(output_type: str) -> tuple[str, str]:
-    """Extract PDF/A part and conformance from output_type.
+def output_type_to_flavour(output_type: str) -> Flavour:
+    """Map an ``--output-type`` value to the PDF/A flavour it produces.
 
     Args:
-        output_type: One of 'pdfa', 'pdfa-1', 'pdfa-2', 'pdfa-3'
+        output_type: One of 'pdfa', 'pdfa-1', 'pdfa-2', 'pdfa-3' or 'auto'.
 
     Returns:
-        Tuple of (part, conformance) e.g., ('2', 'B')
+        The pikepdf PDF/A flavour; PDF/A-2b for 'auto' or an unknown value.
     """
-    mapping = {
-        'pdfa': ('2', 'B'),
-        'pdfa-1': ('1', 'B'),
-        'pdfa-2': ('2', 'B'),
-        'pdfa-3': ('3', 'B'),
-    }
-    return mapping.get(output_type, ('2', 'B'))
+    from pikepdf.pdfa import Flavour
+
+    return Flavour(_OUTPUT_TYPE_FLAVOURS.get(output_type, '2b'))
 
 
-def add_pdfa_metadata(pdf: Pdf, part: str, conformance: str) -> None:
-    """Add PDF/A XMP metadata declaration to a PDF.
+def get_pdf_save_settings(output_type: str) -> dict[str, Any]:
+    """Get pikepdf.Pdf.save settings for the given output type.
+
+    For the PDF/A output types these are the complete settings pikepdf
+    resolves for the flavour, with settings that would make the file
+    invalid, or different from what was validated, pinned
+    (`pikepdf.pdfa.resolve_save_kwargs`). Callers may change only the
+    settings pikepdf leaves to the user, such as ``linearize`` and
+    ``progress``.
 
     Args:
-        pdf: An open pikepdf.Pdf object
-        part: PDF/A part number ('1', '2', or '3')
-        conformance: Conformance level ('A', 'B', or 'U')
+        output_type: 'pdf', or one of the PDF/A output types. For 'auto',
+            pass the output type achieved, 'pdfa' or 'pdf'.
     """
-    with pdf.open_metadata() as meta:
-        meta['pdfaid:part'] = part
-        meta['pdfaid:conformance'] = conformance
+    if output_type.startswith('pdfa'):
+        from pikepdf.pdfa import resolve_save_kwargs
 
-
-def add_srgb_output_intent(pdf: Pdf) -> None:
-    """Add sRGB ICC profile as OutputIntent to PDF catalog.
-
-    This creates the required PDF/A OutputIntent structure with:
-    - An ICC profile stream containing sRGB profile
-    - An OutputIntent dictionary pointing to that profile
-    - Updates the Catalog's OutputIntents array
-
-    Args:
-        pdf: An open pikepdf.Pdf object
-    """
-    icc_data = _load_srgb_icc_profile()
-
-    # Create ICC profile stream
-    icc_stream = Stream(pdf, icc_data)
-    icc_stream[Name.N] = 3  # RGB has 3 components
-
-    # Create OutputIntent dictionary
-    output_intent = Dictionary(
-        {
-            '/Type': Name.OutputIntent,
-            '/S': Name('/GTS_PDFA1'),
-            '/OutputConditionIdentifier': 'sRGB',
-            '/DestOutputProfile': icc_stream,
-        }
+        return resolve_save_kwargs(
+            output_type_to_flavour(output_type), compress_streams=True
+        )
+    return dict(
+        preserve_pdfa=True,
+        compress_streams=True,
+        object_stream_mode=pikepdf.ObjectStreamMode.generate,
     )
 
-    # Add to catalog's OutputIntents array
-    if Name.OutputIntents not in pdf.Root:
-        pdf.Root[Name.OutputIntents] = Array([])
 
-    # Check if sRGB OutputIntent already exists
-    for intent in pdf.Root.OutputIntents:  # type: ignore[attr-defined]
-        if str(intent.get(Name.OutputConditionIdentifier)) == 'sRGB':
-            log.debug('sRGB OutputIntent already exists, skipping')
-            return
+def log_prepare_result(result: PrepareResult | None) -> None:
+    """Log what `pikepdf.pdfa.prepare` changed, at the level pikepdf suggests.
 
-    pdf.Root.OutputIntents.append(output_intent)
+    Removing hidden annotations discards content the user may care about, so
+    it is a warning. Other changes the reader might notice are logged at info
+    level, and the rest at debug level.
+    """
+    if result is None:
+        return
+    for level, sentence in result.messages():
+        log.log(logging.getLevelName(level.upper()), '%s', sentence)
+
+
+def prepare_pdfa(pdf: Pdf, output_type: str) -> PrepareResult:
+    """Declare PDF/A in an open PDF that is to be saved as PDF/A.
+
+    Runs `pikepdf.pdfa.prepare`, keeping the document's output intents,
+    which were installed earlier by speculative conversion or by
+    Ghostscript: it rewrites the XMP packet in the canonical form pikepdf's
+    validator accepts, declares PDF/A conformance, sets DocInfo to agree
+    with XMP, and repeats the structural repairs, which change nothing on a
+    file that was already prepared. It is safe to call again after editing
+    the metadata.
+
+    Args:
+        pdf: An open pikepdf.Pdf object
+        output_type: One of 'pdfa', 'pdfa-1', 'pdfa-2', 'pdfa-3'
+    """
+    from pikepdf.pdfa import prepare
+
+    result = prepare(pdf, output_type_to_flavour(output_type), output_intent=None)
+    log_prepare_result(result)
+    return result
 
 
 def speculative_pdfa_conversion(
     input_file: Path,
     output_file: Path,
     output_type: str,
-) -> Path:
-    """Attempt to convert a PDF to PDF/A by adding required structures.
+) -> Report:
+    """Attempt to convert a PDF to PDF/A by adding and repairing structures.
 
-    This function creates a copy of the input PDF and adds:
-    1. sRGB ICC profile as OutputIntent
-    2. XMP metadata declaring PDF/A conformance
+    `pikepdf.pdfa.save` replaces the output intents with an sRGB PDF/A
+    intent, removes image interpolation, removes annotations that are hidden
+    or not viewable and sets the Print flag on the others, adds the /CIDSet
+    that PDF/A-1 requires on subset CIDFonts, rewrites the XMP packet with
+    only what PDF/A permits, declares PDF/A conformance, and saves with the
+    settings of the flavour. It then validates the bytes written, and moves
+    them to *output_file* only if they pass.
 
-    This approach works for PDFs that are already mostly PDF/A compliant
-    but lack the formal declarations. It does NOT perform color conversion,
-    font embedding, or other transformations that Ghostscript does.
+    This works for PDFs that are already mostly PDF/A compliant but lack the
+    formal declarations. It does NOT perform color conversion, font
+    embedding, or other transformations that Ghostscript does.
 
     Args:
         input_file: Path to input PDF
@@ -308,18 +325,19 @@ def speculative_pdfa_conversion(
         output_type: One of 'pdfa', 'pdfa-1', 'pdfa-2', 'pdfa-3'
 
     Returns:
-        Path to the output file
+        pikepdf's validation report on the file written, which passed.
 
     Raises:
+        pikepdf.pdfa.PdfaError: If the file written did not pass validation;
+            ``e.report`` explains why. *output_file* is not written.
         pikepdf.PdfError: If the PDF cannot be opened or modified
     """
-    part, conformance = _pdfa_part_conformance(output_type)
+    from pikepdf.pdfa import save
 
-    with Pdf.open(input_file) as pdf:
-        add_srgb_output_intent(pdf)
-        add_pdfa_metadata(pdf, part, conformance)
-
-        pdf.save(output_file)
+    flavour = output_type_to_flavour(output_type)
+    with Pdf.open(input_file, conversion_mode='explicit') as pdf:
+        report = save(pdf, output_file, flavour, output_intent='sRGB')
+    log_prepare_result(report.prepared)
 
     log.debug('Speculative PDF/A conversion complete: %s', output_file)
-    return output_file
+    return report

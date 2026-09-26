@@ -21,12 +21,7 @@ from pikepdf import Dictionary, Name, NamePath, Page, Pdf
 from ocrmypdf._concurrent import Executor, SerialExecutor
 from ocrmypdf._pageboxes import coerce_box
 from ocrmypdf.exceptions import EncryptedPdfError
-from ocrmypdf.helpers import (
-    Resolution,
-    pikepdf_get_bool,
-    pikepdf_get_decimal,
-    pikepdf_get_int,
-)
+from ocrmypdf.helpers import Resolution
 from ocrmypdf.pdfinfo._contentstream import TextboxInfo, TextMarker, VectorMarker
 from ocrmypdf.pdfinfo._image import ImageInfo, _process_content_streams
 from ocrmypdf.pdfinfo._types import FloatRect
@@ -153,11 +148,11 @@ class PageInfo:
         else:
             self._textboxes = []
 
-        userunit = pikepdf_get_decimal(page.obj, Name.UserUnit, Decimal(1))
+        userunit = page.obj.get_decimal(Name.UserUnit, Decimal(1), coerce=True)
         self._userunit = userunit
         self._width_inches = width_pt * userunit / Decimal(72.0)
         self._height_inches = height_pt * userunit / Decimal(72.0)
-        self._rotate = int(getattr(page.obj, 'Rotate', 0))
+        self._rotate = page.obj.get_int(Name.Rotate, 0, coerce=True)
 
         userunit_shorthand = (userunit, 0, 0, userunit, 0, 0)
 
@@ -400,7 +395,7 @@ class PdfInfo:
         if check_pages is None:
             check_pages = range(0, 1_000_000_000)
 
-        with Pdf.open(infile) as pdf:
+        with Pdf.open(infile, conversion_mode='explicit') as pdf:
             if pdf.is_encrypted:
                 raise EncryptedPdfError()  # Triggered by encryption with empty passwd
             pscript5_mode = str(pdf.docinfo.get(Name.Creator, "")).startswith(
@@ -423,13 +418,17 @@ class PdfInfo:
                     detailed_analysis=detailed_analysis,
                     miner_state=miner_state,
                 )
-            self._needs_rendering = pikepdf_get_bool(pdf.Root, Name.NeedsRendering)
+            self._needs_rendering = pdf.Root.get_bool(
+                Name.NeedsRendering, False, coerce=True
+            )
             acroform = pdf.Root.get(Name.AcroForm)
             if isinstance(acroform, Dictionary):
                 if len(acroform.get(Name.Fields, [])) > 0 or Name.XFA in acroform:
                     self._has_acroform = True
-                self._has_signature = bool(pikepdf_get_int(acroform, Name.SigFlags) & 1)
-            self._is_tagged = pikepdf_get_bool(pdf.Root, MARKINFO_MARKED)
+                self._has_signature = bool(
+                    acroform.get_int(Name.SigFlags, 0, coerce=True) & 1
+                )
+            self._is_tagged = pdf.Root.get_bool(MARKINFO_MARKED, False, coerce=True)
             self._has_structure_tree = Name.StructTreeRoot in pdf.Root
 
     @property

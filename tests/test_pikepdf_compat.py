@@ -17,9 +17,8 @@ from decimal import Decimal
 
 import pikepdf
 import pytest
-from pikepdf import Array, Dictionary, Name, NamePath, Stream
+from pikepdf import Array, Dictionary, Name, Stream
 
-from ocrmypdf import helpers
 from ocrmypdf._annots import remove_broken_goto_annotations
 from ocrmypdf._graft import discard_text_search_index
 from ocrmypdf.builtin_plugins.ghostscript import _collect_dctdecode_images
@@ -50,110 +49,16 @@ def _empty_name_tree(pdf) -> None:
     )
 
 
-@pytest.fixture
-def blank_pdf():
-    pdf = pikepdf.Pdf.new()
+@pytest.fixture(params=['explicit', 'implicit'])
+def blank_pdf(request):
+    """A one-page Pdf, in each conversion mode.
+
+    OCRmyPDF opens every file in explicit mode, but the scans below must not
+    depend on it, since a library caller may hand them a Pdf of its own.
+    """
+    pdf = pikepdf.Pdf.new(conversion_mode=request.param)
     pdf.add_blank_page(page_size=(200, 200))
     return pdf
-
-
-class TestAccessors:
-    """The scalar accessors reach pikepdf's safe accessors via explicit mode."""
-
-    @pytest.mark.parametrize(
-        'value, expected',
-        [
-            (7, 7),
-            (pikepdf.Object.parse(b'7'), 7),
-            (Decimal('3.9'), 3),  # a Real under an integer key truncates
-            (True, 1),
-            (pikepdf.String('7'), 99),  # a number written as a string is not one
-            (Name.Seven, 99),
-            (Array([7]), 99),
-            (None, 99),  # key absent
-        ],
-    )
-    def test_get_int(self, value, expected):
-        d = Dictionary()
-        if value is not None:
-            d[Name.K] = value
-        assert helpers.pikepdf_get_int(d, Name.K, 99) == expected
-
-    @pytest.mark.parametrize(
-        'value, expected',
-        [
-            (True, True),
-            (False, False),
-            (1, True),  # malformed producers store flags as 0/1
-            (0, False),
-            (pikepdf.Object.parse(b'true'), True),
-            (pikepdf.String('true'), False),
-            (Array([1]), False),
-            (None, False),
-        ],
-    )
-    def test_get_bool(self, value, expected):
-        d = Dictionary()
-        if value is not None:
-            d[Name.K] = value
-        assert helpers.pikepdf_get_bool(d, Name.K, False) is expected
-
-    @pytest.mark.parametrize(
-        'value, expected',
-        [
-            (Decimal('1.5'), Decimal('1.5')),
-            (3, Decimal(3)),
-            (Name.Nope, Decimal(9)),
-            (None, Decimal(9)),
-        ],
-    )
-    def test_get_decimal(self, value, expected):
-        d = Dictionary()
-        if value is not None:
-            d[Name.K] = value
-        assert helpers.pikepdf_get_decimal(d, Name.K, Decimal(9)) == expected
-
-    def test_get_decimal_keeps_written_digits(self):
-        """A Real must not round-trip through binary float."""
-        d = Dictionary()
-        d[Name.K] = Decimal('0.1')
-        assert helpers.pikepdf_get_decimal(d, Name.K) == Decimal('0.1')
-
-    def test_accessors_take_a_namepath(self):
-        d = Dictionary(A=Dictionary(B=5))
-        assert helpers.pikepdf_get_int(d, NamePath.A.B, 0) == 5
-        assert helpers.pikepdf_get_int(d, NamePath.A.Missing, 0) == 0
-        assert helpers.pikepdf_get_int(d, NamePath.Missing.B, 0) == 0
-
-    def test_conversion_mode_is_restored(self):
-        """The helper must not leave the thread in explicit mode.
-
-        Explicit mode silently changes isinstance(x, int) and raises on bool()
-        and ordering comparisons, so leaking it out of a lookup would break
-        unrelated code running on the same thread.
-        """
-        before = pikepdf.get_object_conversion_mode()
-        helpers.pikepdf_get_int(Dictionary(K=1), Name.K)
-        assert pikepdf.get_object_conversion_mode() == before
-
-    @pytest.mark.parametrize('wrong', WRONG_TYPES)
-    def test_get_dict_tolerates_wrong_type(self, wrong):
-        d = Dictionary()
-        d[Name.K] = wrong
-        assert len(helpers.pikepdf_get_dict(d, Name.K)) == 0
-
-    def test_get_dict_on_missing_key(self):
-        assert len(helpers.pikepdf_get_dict(Dictionary(), Name.K)) == 0
-
-    def test_get_dict_returns_the_dictionary(self):
-        d = Dictionary(K=Dictionary(A=1))
-        assert helpers.pikepdf_get_dict(d, Name.K)[Name.A] == 1
-
-    @pytest.mark.parametrize('wrong', WRONG_TYPES)
-    def test_get_dict_tolerates_wrong_type_mid_path(self, wrong):
-        d = Dictionary()
-        d[Name.Resources] = wrong
-        assert len(helpers.pikepdf_get_dict(d, helpers.RESOURCES_XOBJECT)) == 0
 
 
 class TestMalformedResources:
@@ -244,6 +149,20 @@ class TestMalformedCatalog:
         blank_pdf.save(target)
         assert PdfInfo(target).pages[0].userunit == Decimal(1)
 
+    def test_rotate_written_as_a_real(self, blank_pdf, outdir):
+        """A /Rotate stored as 90.0 rather than 90 still reads as a rotation."""
+        blank_pdf.pages[0].obj[Name.Rotate] = Decimal('90.0')
+        target = outdir / 'real_rotate.pdf'
+        blank_pdf.save(target)
+        assert PdfInfo(target).pages[0].rotation == 90
+
+    @pytest.mark.parametrize('wrong', NON_NUMERIC_TYPES)
+    def test_rotate_is_not_a_number(self, blank_pdf, outdir, wrong):
+        blank_pdf.pages[0].obj[Name.Rotate] = wrong
+        target = outdir / 'bad_rotate.pdf'
+        blank_pdf.save(target)
+        assert PdfInfo(target).pages[0].rotation == 0
+
     @pytest.mark.parametrize('wrong', WRONG_TYPES)
     def test_pieceinfo_is_not_a_dict(self, blank_pdf, wrong):
         blank_pdf.Root[Name.PieceInfo] = wrong
@@ -318,4 +237,96 @@ class TestMalformedImageStream:
         )
         # Reaches the /SMask /Matte check without raising; an uncompressed
         # image is then skipped for want of a filter.
+        assert extract_image_filter(image, 1) is None
+
+
+def _image(pdf, **entries):
+    """An image dictionary owned by *pdf*, large enough to be optimized."""
+    return pdf.make_indirect(
+        Dictionary(
+            Subtype=Name.Image,
+            Length=1000,
+            Width=100,
+            Height=100,
+            ColorSpace=Name.DeviceGray,
+            **entries,
+        )
+    )
+
+
+#: Filter parameters that the PDF reference types as integer, stored with a
+#: type that leaves their value unknown. A Real is only unknown when it is not
+#: integral: the sign of /K -0.5 differs from that of its truncation.
+NON_INTEGER_PARAMS = [
+    pytest.param(Name.Nope, id='name'),
+    pytest.param(pikepdf.String('1'), id='string'),
+    pytest.param(True, id='boolean'),
+    pytest.param(Array([1]), id='array'),
+    pytest.param(Decimal('-0.5'), id='fractional'),
+]
+
+
+class TestMalformedFilterParameters:
+    """/DecodeParms entries the optimizer reads to choose a transcoding.
+
+    ISO 32000-2 types /Predictor (Table 8) and /K (Table 11) as integers, and
+    a null entry is the same as a missing one (7.3.9), which takes the
+    default. It defines nothing for a value of another type, so the encoding
+    is unknown and the image is left alone.
+    """
+
+    def _flate_jpeg(self, pdf, flate_parms):
+        return _image(
+            pdf,
+            BitsPerComponent=8,
+            Filter=Array([Name.FlateDecode, Name.DCTDecode]),
+            DecodeParms=Array([flate_parms, None]),
+        )
+
+    def test_flate_jpeg_with_null_parms(self, blank_pdf):
+        """A null in /DecodeParms means the filter uses its defaults."""
+        image = self._flate_jpeg(blank_pdf, None)
+        assert extract_image_filter(image, 1) is not None
+
+    @pytest.mark.parametrize('predictor', [1, Decimal('1.0')])
+    def test_flate_jpeg_without_prediction(self, blank_pdf, predictor):
+        image = self._flate_jpeg(blank_pdf, Dictionary(Predictor=predictor))
+        assert extract_image_filter(image, 1) is not None
+
+    @pytest.mark.parametrize('predictor', NON_INTEGER_PARAMS)
+    def test_flate_jpeg_predictor_not_an_integer(self, blank_pdf, predictor):
+        image = self._flate_jpeg(blank_pdf, Dictionary(Predictor=predictor))
+        assert extract_image_filter(image, 1) is None
+
+    @pytest.mark.parametrize('parms', WRONG_TYPES)
+    def test_flate_jpeg_parms_not_a_dict(self, blank_pdf, parms):
+        image = self._flate_jpeg(blank_pdf, parms)
+        assert extract_image_filter(image, 1) is None
+
+    def _ccitt(self, pdf, **entries):
+        return _image(pdf, BitsPerComponent=1, Filter=Name.CCITTFaxDecode, **entries)
+
+    @pytest.mark.parametrize('k', [-1, Decimal('-1.0')])
+    def test_ccitt_group4(self, blank_pdf, k):
+        image = self._ccitt(blank_pdf, DecodeParms=Dictionary(K=k))
+        assert extract_image_filter(image, 1) is not None
+
+    @pytest.mark.parametrize('k', [None, 0, 1])
+    def test_ccitt_group3(self, blank_pdf, k):
+        """Group 3, which is also what a missing /K means, is not supported."""
+        parms = Dictionary() if k is None else Dictionary(K=k)
+        image = self._ccitt(blank_pdf, DecodeParms=parms)
+        assert extract_image_filter(image, 1) is None
+
+    def test_ccitt_without_parms(self, blank_pdf):
+        assert extract_image_filter(self._ccitt(blank_pdf), 1) is None
+
+    @pytest.mark.parametrize('k', NON_INTEGER_PARAMS)
+    def test_ccitt_k_not_an_integer(self, blank_pdf, k):
+        image = self._ccitt(blank_pdf, DecodeParms=Dictionary(K=k))
+        assert extract_image_filter(image, 1) is None
+
+    @pytest.mark.parametrize('parms', WRONG_TYPES)
+    def test_ccitt_parms_not_a_dict(self, blank_pdf, parms):
+        image = self._ccitt(blank_pdf, DecodeParms=parms)
         assert extract_image_filter(image, 1) is None

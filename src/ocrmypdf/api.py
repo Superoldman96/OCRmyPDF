@@ -550,6 +550,7 @@ def ocr(
     language: Iterable[str] | None = None,
     image_dpi: int | None = None,
     output_type: str | None = None,
+    pdfa_backend: str | None = None,
     sidecar: PathOrIO | None = None,
     jobs: int | None = None,
     use_threads: bool | None = None,
@@ -615,6 +616,7 @@ def ocr(  # noqa: D417
     language: Iterable[str] | None = None,
     image_dpi: int | None = None,
     output_type: str | None = None,
+    pdfa_backend: str | None = None,
     sidecar: PathOrIO | None = None,
     jobs: int | None = None,
     use_threads: bool | None = None,
@@ -1001,6 +1003,7 @@ def _hocr_to_ocr_pdf(  # noqa: D417
     jbig2_page_group_size: int | None = None,  # Deprecated, ignored
     jbig2_threshold: float | None = None,
     pdfa_image_compression: str | None = None,
+    pdfa_backend: str | None = None,
     color_conversion_strategy: str | None = None,
     fast_web_view: float | None = None,
     plugin_manager=None,

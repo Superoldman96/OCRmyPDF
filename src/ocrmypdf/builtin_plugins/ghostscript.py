@@ -17,11 +17,7 @@ from ocrmypdf import hookimpl
 from ocrmypdf._exec import ghostscript
 from ocrmypdf._options import ProcessingMode
 from ocrmypdf.exceptions import MissingDependencyError
-from ocrmypdf.helpers import (
-    RESOURCES_XOBJECT,
-    pikepdf_get_dict,
-    pikepdf_get_int,
-)
+from ocrmypdf.helpers import RESOURCES_XOBJECT
 from ocrmypdf.subprocess import check_external_program
 
 log = logging.getLogger(__name__)
@@ -121,7 +117,12 @@ class GhostscriptOptions(BaseModel):
             type=str,
             choices=[ccs.value for ccs in ColorConversionStrategy],
             default=ColorConversionStrategy.LEAVE_COLOR_UNCHANGED.value,
-            help="Set Ghostscript color conversion strategy",
+            help="Set Ghostscript color conversion strategy. OCRmyPDF does no "
+            "color conversion of its own: 'LeaveColorUnchanged' and 'RGB' are "
+            "met by any PDF/A pikepdf's validator approves, while 'CMYK', "
+            "'Gray' and 'UseDeviceIndependentColor' require Ghostscript and "
+            "select --pdfa-backend ghostscript (an error with --pdfa-backend "
+            "internal).",
         )
         gs.add_argument(
             '--pdfa-image-compression',
@@ -187,14 +188,23 @@ def add_options(parser):
 @hookimpl
 def check_options(options):
     """Check that the options are valid for this plugin."""
-    # Only require Ghostscript for pdfa* output types (not 'auto' or 'pdf')
-    # 'auto' mode uses best-effort PDF/A without Ghostscript fallback
-    if options.output_type.startswith('pdfa'):
+    # Ghostscript is required to make PDF/A for the pdfa* output types, unless
+    # the internal backend was chosen, and for --output-type auto only if the
+    # Ghostscript backend was chosen: auto otherwise degrades to a regular PDF
+    # when it cannot produce PDF/A.
+    if options.output_type == 'pdfa':
+        options.output_type = 'pdfa-2'
+    makes_pdfa = options.output_type == 'auto' or options.output_type.startswith('pdfa')
+    explicit_backend = options.pdfa_backend == 'ghostscript' and makes_pdfa
+    if explicit_backend or (
+        options.pdfa_backend != 'internal' and options.output_type.startswith('pdfa')
+    ):
         check_external_program(
             program='gs',
             package='ghostscript',
             version_checker=ghostscript.version,
             need_version='9.54',  # RHEL 9's version; Ubuntu 22.04 has 9.55
+            required_for='--pdfa-backend ghostscript' if explicit_backend else None,
         )
         gs_version = ghostscript.version()
         if gs_version in BLACKLISTED_GS_VERSIONS:
@@ -231,8 +241,6 @@ def check_options(options):
                 gs_version,
                 ghostscript.GS_TOUNICODE_MULTICHAR_FIXED,
             )
-        if options.output_type == 'pdfa':
-            options.output_type = 'pdfa-2'
 
     if (
         options.ghostscript.color_conversion_strategy
@@ -324,10 +332,10 @@ def _collect_dctdecode_images(pdf: Pdf) -> dict[tuple, list[tuple[Stream, bytes]
                 filt = obj.get(Name.Filter)
                 if filt == Name.DCTDecode:
                     sig = (
-                        pikepdf_get_int(obj, Name.Width),
-                        pikepdf_get_int(obj, Name.Height),
+                        obj.get_int(Name.Width, 0, coerce=True),
+                        obj.get_int(Name.Height, 0, coerce=True),
                         str(filt),
-                        pikepdf_get_int(obj, Name.BitsPerComponent),
+                        obj.get_int(Name.BitsPerComponent, 0, coerce=True),
                         get_colorspace_key(obj),
                     )
                     raw_bytes = obj.read_raw_bytes()
@@ -337,11 +345,11 @@ def _collect_dctdecode_images(pdf: Pdf) -> dict[tuple, list[tuple[Stream, bytes]
             # Recurse into Form XObjects
             elif obj.get(Name.Subtype) == Name.Form:
                 process_xobject_dict(
-                    pikepdf_get_dict(obj, RESOURCES_XOBJECT), depth=depth + 1
+                    obj.get_dict(RESOURCES_XOBJECT) or {}, depth=depth + 1
                 )
 
     for page in pdf.pages:
-        process_xobject_dict(pikepdf_get_dict(page.obj, RESOURCES_XOBJECT))
+        process_xobject_dict(page.obj.get_dict(RESOURCES_XOBJECT) or {})
 
     return images
 
@@ -362,8 +370,10 @@ def _repair_gs106_jpeg_corruption(
     first_error_logged = False
 
     with (
-        Pdf.open(input_pdf_path) as input_pdf,
-        Pdf.open(output_pdf_path, allow_overwriting_input=True) as output_pdf,
+        Pdf.open(input_pdf_path, conversion_mode='explicit') as input_pdf,
+        Pdf.open(
+            output_pdf_path, allow_overwriting_input=True, conversion_mode='explicit'
+        ) as output_pdf,
     ):
         # Collect all DCTDecode images from both PDFs
         input_images = _collect_dctdecode_images(input_pdf)

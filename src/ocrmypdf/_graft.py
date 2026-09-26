@@ -32,7 +32,6 @@ from pikepdf import (
 from ocrmypdf._jobcontext import PdfContext
 from ocrmypdf._options import ProcessingMode
 from ocrmypdf._pipeline import VECTOR_PAGE_DPI
-from ocrmypdf.helpers import pikepdf_get_dict
 
 
 class RenderMode(Enum):
@@ -176,6 +175,9 @@ PIECEINFO_SEARCHINDEX = NamePath.PieceInfo.SearchIndex
 
 #: A page's font resources.
 RESOURCES_FONT = NamePath.Resources.Font
+
+#: A page's graphics state resources.
+RESOURCES_EXTGSTATE = NamePath.Resources.ExtGState
 
 
 def _ensure_dictionary(obj: Dictionary | Stream, name: Name):
@@ -454,7 +456,7 @@ class OcrGrafter:
         self.context = context
         self.path_base = context.origin
 
-        self.pdf_base = Pdf.open(self.path_base)
+        self.pdf_base = Pdf.open(self.path_base, conversion_mode='explicit')
 
         self.pdfinfo = context.pdfinfo
         self.output_file = context.get_path('graft_layers.pdf')
@@ -509,7 +511,7 @@ class OcrGrafter:
             # We are updating the old page with a rasterized PDF of the new
             # page (without changing objgen, to preserve references)
             log.debug("Emplacement update")
-            with Pdf.open(path_image) as pdf_image:
+            with Pdf.open(path_image, conversion_mode='explicit') as pdf_image:
                 self.emplacements += 1
                 foreign_image_page = pdf_image.pages[0]
                 self.pdf_base.pages.append(foreign_image_page)
@@ -641,7 +643,7 @@ class OcrGrafter:
         renderer.render(multi_page_pdf_path)
 
         # Now graft each page from the multi-page PDF
-        with Pdf.open(multi_page_pdf_path) as pdf_text:
+        with Pdf.open(multi_page_pdf_path, conversion_mode='explicit') as pdf_text:
             for idx, parsed in enumerate(self.fpdf2_parsed_pages):
                 # Copy page from multi-page PDF
                 text_page = pdf_text.pages[idx]
@@ -707,13 +709,12 @@ class OcrGrafter:
 
         # Copy resources from text page's Resources to xobj
         # We need to handle this carefully since text_page is from a foreign PDF
-        text_resources = pikepdf_get_dict(text_page.obj, Name.Resources)
-        if text_resources:
+        if text_page.obj.get_dict(Name.Resources):
             # Create empty Resources dictionary for xobj
             xobj_resources = _ensure_dictionary(xobj, Name.Resources)
 
             # Copy fonts if they exist
-            text_fonts = pikepdf_get_dict(text_resources, Name.Font)
+            text_fonts = text_page.obj.get_dict(RESOURCES_FONT)
             if text_fonts:
                 xobj_fonts = _ensure_dictionary(xobj_resources, Name.Font)
                 # Copy each font from the foreign PDF
@@ -721,7 +722,7 @@ class OcrGrafter:
                     xobj_fonts[font_name] = self.pdf_base.copy_foreign(font_obj)
 
             # Copy ExtGState (graphics state) if it exists - needed for transparency
-            text_extstates = pikepdf_get_dict(text_resources, Name.ExtGState)
+            text_extstates = text_page.obj.get_dict(RESOURCES_EXTGSTATE)
             if text_extstates:
                 xobj_extstates = _ensure_dictionary(xobj_resources, Name.ExtGState)
                 # Copy each graphics state from the foreign PDF
@@ -777,17 +778,16 @@ class OcrGrafter:
             return
 
         try:
-            with Pdf.open(textpdf) as pdf_text:
+            with Pdf.open(textpdf, conversion_mode='explicit') as pdf_text:
                 pdf_text_contents = pdf_text.pages[0].Contents.read_bytes()
 
                 base_page = self.pdf_base.pages[pageno]
 
                 # Get font from the text PDF
-                pdf_text_fonts = pikepdf_get_dict(pdf_text.pages[0].obj, RESOURCES_FONT)
                 font = None
                 font_key = None
                 for f in ('/f-0-0', '/F1'):
-                    pdf_text_font = pdf_text_fonts.get(f, None)
+                    pdf_text_font = pdf_text.pages[0].obj.get(RESOURCES_FONT(f))
                     if pdf_text_font is not None:
                         font_key = Name(f)
                         font = self.pdf_base.copy_foreign(pdf_text_font)

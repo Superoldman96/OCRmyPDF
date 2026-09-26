@@ -76,6 +76,15 @@ git commit -m "Regenerate Tesseract cache (tesseract 5.5.1)"
 Always name the Tesseract version in the commit message, and regenerate the
 whole tree with one Tesseract version rather than mixing versions.
 
+### PDF/A validation
+
+Speculative PDF/A conversion (see {doc}`advanced`) is validated by
+pikepdf's PDF/A support, `pikepdf.pdfa`. Problems with the validator's
+verdicts, and its differential testing against
+[veraPDF](https://verapdf.org/) (`misc/pdfa_differential.py`), belong to
+[pikepdf](https://github.com/pikepdf/pikepdf). OCRmyPDF's tests of the PDF/A
+pipeline cross-check their output with veraPDF when it is installed.
+
 ## New dependencies
 
 If you are proposing a change that will require a new dependency, we

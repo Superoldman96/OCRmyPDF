@@ -313,7 +313,7 @@ def test_generate_pdfa_honors_jpeg_maxdpi(outdir):
     assert '-dMonoImageResolution=300' in args
 
 
-def test_ghostscript_jpeg_options_via_cli(resources, outpdf):
+def test_ghostscript_jpeg_options_via_cli(resources, outpdf, no_speculative_pdfa):
     """End-to-end: CLI flags reach the ghostscript plugin namespace."""
     with patch(
         'ocrmypdf._exec.ghostscript.generate_pdfa',
@@ -365,7 +365,7 @@ def test_gs_raster_failure(resources, outpdf, caplog):
     assert exitcode == ExitCode.child_process_error
 
 
-def test_ghostscript_pdfa_failure(resources, outpdf, caplog):
+def test_ghostscript_pdfa_failure(resources, outpdf, caplog, no_speculative_pdfa):
     exitcode = run_ocrmypdf_api(
         resources / 'francais.pdf',
         outpdf,

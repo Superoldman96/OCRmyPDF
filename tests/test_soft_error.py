@@ -53,7 +53,7 @@ def test_render_continue_on_soft_error(resources, outpdf):
 
 
 @pytest.mark.skipif(os.name == 'nt', reason='Ghostscript on Windows errors out')
-def test_render_stop_on_soft_error(resources, outpdf):
+def test_render_stop_on_soft_error(resources, outpdf, no_speculative_pdfa):
     exitcode = run_ocrmypdf_api(
         resources / 'francais.pdf',
         outpdf,

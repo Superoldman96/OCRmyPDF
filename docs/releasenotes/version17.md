@@ -3,7 +3,64 @@
 
 # v17
 
-## v17.12.2
+## v17.13.0
+
+**Changes**
+
+- OCRmyPDF now checks PDF/A made without Ghostscript ("speculative"
+  conversion) with pikepdf's new PDF/A support, `pikepdf.pdfa`, instead of
+  veraPDF. pikepdf validates the bytes it writes, and OCRmyPDF validates the
+  final output file again after the metadata and optimization steps.
+  veraPDF is no longer needed or used, so the fast path that skips
+  Ghostscript is now taken whether or not veraPDF is installed, including in
+  the Docker image. The validator approves only constructs it recognizes
+  and knows to conform, and sends anything else to Ghostscript, as before.
+  A file containing a construct the validator does not check is reported
+  as not checked, rather than as a violation, and is also sent to
+  Ghostscript; run with `-v1` to see why a file was not approved. The
+  validator was tested against veraPDF, which the test suite still uses when
+  installed.
+- Speculative conversion now works for PDF/A-1b (`--output-type pdfa-1`),
+  which previously always went through Ghostscript. It now also repairs a
+  few common problems before validating: it replaces other output intents
+  (such as a PDF/X intent) with the sRGB PDF/A intent, removes image
+  interpolation flags, sets the Print flag on annotations that lack it, adds
+  the `/CIDSet` that PDF/A-1 requires for subset CID fonts, and removes XMP
+  metadata properties that PDF/A does not permit, logging which ones it
+  removed.
+- New option `--pdfa-backend {auto,ghostscript,internal}` (API:
+  `pdfa_backend=`) chooses how PDF/A is produced. `auto`, the default, is
+  the existing behaviour: OCRmyPDF's own conversion first, Ghostscript if the
+  validator does not approve it. `internal` never uses Ghostscript for
+  PDF/A, so JPEG images pass through unchanged; if the validator does not
+  approve the file, the `pdfa` output types fail with exit code 10 and log
+  the validator's findings, and `--output-type auto` outputs a regular PDF.
+  `ghostscript` always converts with Ghostscript and requires it.
+  `--pdfa-image-compression`, `--ghostscript-jpeg-quality` and
+  `--ghostscript-jpeg-maxdpi` only take effect in Ghostscript, so they now
+  select the Ghostscript backend under `auto` (previously only
+  `--pdfa-image-compression` did, and the other two were silently ignored
+  when Ghostscript was not needed) and are an error with `internal`.
+  So are `--color-conversion-strategy` `CMYK`, `Gray` and
+  `UseDeviceIndependentColor`; `LeaveColorUnchanged` and `RGB` work with every
+  backend.
+- Speculative conversion now removes annotations that are hidden or not
+  viewable (the Hidden, Invisible, NoView or ToggleNoView flag), which PDF/A
+  does not permit, together with their pop-up annotations, and warns once
+  how many it removed. Ghostscript does the same. Such files previously
+  always went through Ghostscript.
+- When the input's creation date has no time zone, OCRmyPDF now assumes it
+  is in the local time zone, attaches that zone to the output's dates, and
+  warns that it did so; set the `TZ` environment variable to choose another
+  zone. Such dates were previously copied without a zone, which veraPDF
+  compares inconsistently in PDF/A-1.
+- With `--output-type auto`, `--force-ocr` output is now validated like any
+  other file, instead of being declared PDF/A without validation when
+  veraPDF was not installed.
+- OCRmyPDF now requires `pikepdf[pdfa]` 10.14 or later. The `pdfa` extra
+  brings in `jsonschema`, `referencing` and `fonttools`, all packaged by
+  Debian and Red Hat. PDF/A files are saved with the settings pikepdf pins
+  for the PDF/A flavour, so that later steps do not invalidate them.
 
 **Fixes**
 

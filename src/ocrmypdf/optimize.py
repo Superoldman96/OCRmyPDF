@@ -49,6 +49,8 @@ from pikepdf import (
     PdfImage,
     Stream,
     UnsupportedImageTypeError,
+    as_decimal,
+    as_int,
 )
 from pikepdf.models.image import HifiPrintImageNotTranscodableError
 from PIL import Image
@@ -61,8 +63,6 @@ from ocrmypdf.exceptions import OutputFileAccessError
 from ocrmypdf.helpers import (
     IMG2PDF_KWARGS,
     RESOURCES_XOBJECT,
-    pikepdf_get_dict,
-    pikepdf_get_int,
     safe_symlink,
 )
 
@@ -102,6 +102,32 @@ def jpg_name(root: Path, xref: Xref) -> Path:
     return img_name(root, xref, '.jpg')
 
 
+def _filter_parameter(decode_parms: Any, key: Name, default: int) -> int | None:
+    """Read an integer parameter of a stream filter, or None if it is unknown.
+
+    ISO 32000-2 types each filter parameter read here as an integer. Missing
+    decode parameters, a null in a /DecodeParms array, and a missing or null
+    entry all mean the filter uses the default (7.3.8.2, 7.3.9). The standard
+    defines no meaning for a value of any other type, so the encoding is
+    unknown; callers leave such images alone. A Real that spells an integer
+    is taken as that integer, but a fractional one is not truncated, since
+    truncation can change the sign that /K depends on.
+    """
+    if decode_parms is None:
+        return default
+    if not isinstance(decode_parms, Dictionary | dict):
+        return None
+    value = decode_parms.get(key)
+    if value is None:
+        return default
+    if (integer := as_int(value)) is not None:
+        return integer
+    real = as_decimal(value)
+    if real is not None and real == real.to_integral_value():
+        return int(real)
+    return None
+
+
 def extract_image_filter(
     image: Stream, xref: Xref
 ) -> tuple[PdfImage, tuple[Name, Object]] | None:
@@ -109,14 +135,13 @@ def extract_image_filter(
     if image.get(Name.Subtype) != Name.Image:
         return None
     # A malformed PDF may omit these or store them as the wrong type, in which
-    # case pikepdf_get_int yields 0 and the image is skipped -- the same answer
-    # the explicit isinstance guards this replaced arrived at.
-    if pikepdf_get_int(image, Name.Length) < 100:
+    # case get_int yields 0 and the image is skipped.
+    if image.get_int(Name.Length, 0, coerce=True) < 100:
         log.debug(f"xref {xref}: skipping image with small stream size")
         return None
     if (
-        pikepdf_get_int(image, Name.Width) < 8
-        or pikepdf_get_int(image, Name.Height) < 8
+        image.get_int(Name.Width, 0, coerce=True) < 8
+        or image.get_int(Name.Height, 0, coerce=True) < 8
     ):  # Issue 732
         log.debug(f"xref {xref}: skipping image with unusually small dimensions")
         return None
@@ -136,8 +161,7 @@ def extract_image_filter(
         if (
             len(pim.filter_decodeparms) == 2
             and first_filtdp[0] == Name.FlateDecode
-            and first_filtdp[1] is not None
-            and first_filtdp[1].get(Name.Predictor, 1) == 1
+            and _filter_parameter(first_filtdp[1], Name.Predictor, 1) == 1
             and second_filtdp[0] == Name.DCTDecode
             and not second_filtdp[1]
         ):
@@ -160,9 +184,14 @@ def extract_image_filter(
         log.debug(f"xref {xref}: skipping JPEG2000 image")
         return None  # Don't do JPEG2000
 
-    if filtdp[0] == Name.CCITTFaxDecode and filtdp[1].get('/K', 0) >= 0:
-        log.debug(f"xref {xref}: skipping CCITT Group 3 image")
-        return None  # pikepdf doesn't support Group 3 yet
+    if filtdp[0] == Name.CCITTFaxDecode:
+        k = _filter_parameter(filtdp[1], Name.K, 0)
+        if k is None:
+            log.debug(f"xref {xref}: skipping CCITT image with malformed /K")
+            return None
+        if k >= 0:
+            log.debug(f"xref {xref}: skipping CCITT Group 3 image")
+            return None  # pikepdf doesn't support Group 3 yet
 
     if Name.Decode in image:
         log.debug(f"xref {xref}: skipping image with Decode table")
@@ -275,9 +304,10 @@ def png_from_flate_predictor(pim: PdfImage, image: Stream) -> bytes | None:
     if len(pim.filter_decodeparms) != 1:
         return None  # Cascaded filters: the Flate layer is not the pixel data
     filter_, decode_parms = pim.filter_decodeparms[0]
-    if filter_ != Name.FlateDecode or not decode_parms:
+    if filter_ != Name.FlateDecode:
         return None
-    if pikepdf_get_int(decode_parms, Name.Predictor, 1) < 10:
+    predictor = _filter_parameter(decode_parms, Name.Predictor, 1)
+    if predictor is None or predictor < 10:
         return None  # Not PNG-filtered, so scanlines lack a filter type byte
 
     colorspace = pim.colorspace
@@ -295,9 +325,9 @@ def png_from_flate_predictor(pim: PdfImage, image: Stream) -> bytes | None:
     # The predictor was applied to the layout these parameters describe. If they
     # disagree with the image itself, the stream is not the image's scanlines.
     if (
-        pikepdf_get_int(decode_parms, Name.Colors, 1) != colors
-        or pikepdf_get_int(decode_parms, Name.BitsPerComponent, 8) != bit_depth
-        or pikepdf_get_int(decode_parms, Name.Columns, 1) != pim.width
+        _filter_parameter(decode_parms, Name.Colors, 1) != colors
+        or _filter_parameter(decode_parms, Name.BitsPerComponent, 8) != bit_depth
+        or _filter_parameter(decode_parms, Name.Columns, 1) != pim.width
     ):
         return None
 
@@ -410,7 +440,7 @@ def _find_image_xrefs_container(
         # rather than a cycle defense, so a debug log is sufficient.
         log.debug("Recursion depth exceeded in _find_image_xrefs_page")
         return
-    for _imname, image in pikepdf_get_dict(container, RESOURCES_XOBJECT).items():
+    for _imname, image in (container.get_dict(RESOURCES_XOBJECT) or {}).items():
         if image.objgen[1] != 0:
             continue  # Ignore images in an incremental PDF
         xref = Xref(image.objgen[0])
@@ -659,8 +689,8 @@ def _find_deflatable_jpeg(
             (
                 # Don't flate very large images because it will slow down PDF viewers
                 1 <= options.optimize <= 2
-                and pikepdf_get_int(image, Name.Width) < FLATE_JPEG_THRESHOLD
-                and pikepdf_get_int(image, Name.Height) < FLATE_JPEG_THRESHOLD
+                and image.get_int(Name.Width, 0, coerce=True) < FLATE_JPEG_THRESHOLD
+                and image.get_int(Name.Height, 0, coerce=True) < FLATE_JPEG_THRESHOLD
             )
             or options.optimize == 3
         )
@@ -735,7 +765,7 @@ def _transcode_png(pdf: Pdf, filename: Path, xref: Xref) -> bool:
     with output.open('wb') as f:
         img2pdf.convert(fspath(filename), outputstream=f, **IMG2PDF_KWARGS)
 
-    with Pdf.open(output) as pdf_image:
+    with Pdf.open(output, conversion_mode='explicit') as pdf_image:
         foreign_image = next(iter(pdf_image.pages[0].get_images().values()))
         local_image = pdf.copy_foreign(foreign_image)
 
@@ -845,7 +875,7 @@ def optimize(
     if not options.png_quality:
         options.png_quality = DEFAULT_PNG_QUALITY if options.optimize < 3 else 30
 
-    with Pdf.open(input_file) as pdf:
+    with Pdf.open(input_file, conversion_mode='explicit') as pdf:
         root = output_file.parent / 'images'
         root.mkdir(exist_ok=True)
 
@@ -879,7 +909,7 @@ def optimize(
             "optimizations will not be used"
         )
         # We still need to save the file
-        with Pdf.open(input_file) as pdf:
+        with Pdf.open(input_file, conversion_mode='explicit') as pdf:
             pdf.remove_unreferenced_resources()
             pdf.save(output_file, **save_settings)
     else:

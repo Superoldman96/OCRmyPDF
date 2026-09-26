@@ -141,8 +141,8 @@ PDF/A. PDF/A conversion is performed by Ghostscript, and Ghostscript 10.x discar
 the structure tree during conversion (Ghostscript 9.x preserved it). Because the
 default `--output-type auto` may fall back to Ghostscript, use
 `--output-type pdf` if you need to guarantee that a Tagged PDF's structural markup
-survives. For best results, install veraPDF so that speculative PDF/A
-conversion can sidestep this issue entirely in most real cases.
+survives. Speculative PDF/A conversion, which does not use Ghostscript,
+sidesteps this issue whenever the file passes pikepdf's PDF/A validator.
 :::
 
 ### Time and image size limits
@@ -457,7 +457,7 @@ different strategy, such as `RGB`.
 
 OCRmyPDF intentionally hides most Ghostscript controls because Ghostscript
 is a legacy code path. The preferred PDF/A pipeline in v17+ uses pypdfium2
-as the rasterizer and verapdf to validate speculative PDF/A output, with
+as the rasterizer and pikepdf's PDF/A validator to check speculative PDF/A output, with
 Ghostscript reserved as a fallback for PDFs that cannot be made compliant
 without it. OCRmyPDF's separate optimizer (controlled by `--optimize`,
 `--jpeg-quality`, `--png-quality`, etc.) is the supported way to shrink
@@ -568,20 +568,80 @@ are converted to PDF/A normally.
 :::{versionadded} 17.0.0
 :::
 
-When `--output-type auto` is used (the default), OCRmyPDF attempts a
-fast "speculative" PDF/A conversion that avoids Ghostscript when possible:
+:::{versionchanged} 17.13.0
+Speculative conversion is checked by pikepdf's PDF/A validator
+(`pikepdf.pdfa`) instead of veraPDF, so it no longer depends on veraPDF
+being installed, and it now works for PDF/A-1b as well as PDF/A-2b and
+PDF/A-3b.
+:::
 
-1. OCRmyPDF adds an sRGB ICC profile and PDF/A XMP metadata using pikepdf
-2. If verapdf is available, it validates the result
-3. If validation passes, Ghostscript is skipped entirely
-4. If validation fails or verapdf is unavailable, falls back to Ghostscript
+For all PDF/A output types, including the default `--output-type auto`,
+OCRmyPDF first attempts a fast "speculative" PDF/A conversion that avoids
+Ghostscript when possible:
+
+1. Using `pikepdf.pdfa`, OCRmyPDF replaces the output intents with an sRGB ICC
+   profile, removes image interpolation flags, removes annotations that are
+   hidden or not viewable (as Ghostscript does, with a warning) and sets the
+   Print flag on the others, adds the `/CIDSet` that PDF/A-1 requires
+   for subset CID fonts, removes XMP metadata properties that PDF/A does not
+   permit, and adds the PDF/A identification to the XMP metadata.
+2. pikepdf's PDF/A validator checks the file as written, and OCRmyPDF
+   checks the final output file again after its metadata and optimization
+   steps, which rewrite it.
+3. If validation passes, Ghostscript is skipped entirely.
+4. If validation fails, OCRmyPDF falls back to Ghostscript.
+
+pikepdf's validator is deliberately conservative: it approves only
+constructs it recognizes and knows to conform. A file with a violation
+fails; a file containing constructs the validator does not check is *not
+checked*, which OCRmyPDF also treats as a reason to use Ghostscript. It is
+not a replacement for a reference PDF/A validator such as veraPDF. Run
+`ocrmypdf -v1` to see why a file was not approved. See pikepdf's
+documentation of `pikepdf.pdfa` for what the validator covers.
 
 This fast path avoids some Ghostscript limitations (such as image
 transcoding) and is used whenever it can produce valid PDF/A. When it
-cannot — for example when veraPDF is not installed, or the input needs real
-conversion — `auto` falls back to Ghostscript so that it still produces
-PDF/A by default, matching OCRmyPDF 16 and earlier. If even Ghostscript
-cannot safely produce PDF/A, `auto` outputs a regular PDF instead of failing.
+cannot, because the input needs real conversion (for example, fonts that
+are not embedded, or transparency in PDF/A-1), `auto` falls back to
+Ghostscript so that it still produces PDF/A by default, matching OCRmyPDF 16
+and earlier. If even Ghostscript cannot safely produce PDF/A, `auto` outputs
+a regular PDF instead of failing.
+
+### Choosing the PDF/A backend
+
+:::{versionadded} 17.13.0
+:::
+
+`--pdfa-backend` selects how PDF/A is produced:
+
+- `auto` (the default) tries speculative conversion first and falls back to
+  Ghostscript, as described above.
+- `internal` uses speculative conversion only and never uses Ghostscript to
+  make PDF/A. JPEG images pass through unchanged and the result is checked
+  by pikepdf's validator. If the validator does not approve the file,
+  `--output-type pdfa` (or `pdfa-1`, `pdfa-2`, `pdfa-3`) fails with exit
+  code 10 (`pdfa_conversion_failed`) and logs the validator's findings;
+  `--output-type auto` outputs a regular PDF instead. Ghostscript need not
+  be installed for PDF/A output.
+- `ghostscript` always converts with Ghostscript, which re-encodes images
+  and converts colours as needed, and requires Ghostscript to be installed.
+
+The options that only Ghostscript applies, `--pdfa-image-compression`
+(other than `auto`), `--ghostscript-jpeg-quality` and
+`--ghostscript-jpeg-maxdpi`, select the Ghostscript backend when
+`--pdfa-backend` is `auto`, and are an error with `--pdfa-backend internal`.
+OCRmyPDF does no colour conversion of its own, so the same applies to
+`--color-conversion-strategy` `CMYK`, `Gray` and `UseDeviceIndependentColor`;
+`LeaveColorUnchanged` (the default) and `RGB` need no conversion in any file
+pikepdf's validator approves, so they work with every backend.
+
+```bash
+# PDF/A without Ghostscript, or fail
+ocrmypdf --output-type pdfa --pdfa-backend internal input.pdf output.pdf
+
+# PDF/A from Ghostscript, as in OCRmyPDF 16 and earlier
+ocrmypdf --output-type pdfa --pdfa-backend ghostscript input.pdf output.pdf
+```
 
 ### PDF/A conversion flow
 
@@ -591,24 +651,24 @@ The following diagram illustrates the PDF/A conversion decision tree:
 flowchart TD
     A[Start] --> B{--output-type?}
     B -->|pdf| C[Output standard PDF]
-    B -->|pdfa/pdfa-N| D[Use Ghostscript]
-    B -->|auto| E[Attempt speculative conversion]
+    B -->|pdfa/pdfa-N/auto| G{--pdfa-backend?}
+    G -->|auto/internal| E[Attempt speculative conversion]
+    G -->|ghostscript| D
 
-    E --> F["Add sRGB ICC + XMP metadata (pikepdf)"]
-    F --> G{verapdf available?}
-
-    G -->|No| H{Ghostscript available?}
-    G -->|Yes| I[Validate with verapdf]
+    E --> F["Repair and declare PDF/A (pikepdf)"]
+    F --> I[Validate with pikepdf]
 
     I --> J{Validation passed?}
     J -->|Yes| K[Output PDF/A - Ghostscript skipped]
-    J -->|No| H
+    J -->|No, internal + pdfa| Y[Error: PDF/A conversion failed]
+    J -->|No, internal + auto| L
+    J -->|No, auto backend| H{Ghostscript available?}
 
-    H -->|Yes| D
-    H -->|No| L[Output standard PDF + WARNING]
+    H -->|Yes| D[Ghostscript PDF/A conversion]
+    H -->|No, auto| L[Output standard PDF]
+    H -->|No, pdfa| X[Error: Ghostscript required]
 
-    D --> M[Ghostscript PDF/A conversion]
-    M --> N[Output PDF/A]
+    D --> N[Output PDF/A]
 
     style K fill:#90EE90
     style N fill:#90EE90
@@ -616,10 +676,10 @@ flowchart TD
 ```
 
 :::{warning}
-**Breaking change:** If neither Ghostscript nor verapdf is installed,
-`--output-type auto` will produce a standard PDF instead of PDF/A.
-This is a change from previous versions where Ghostscript was required
-and PDF/A was always produced.
+**Breaking change:** If Ghostscript is not installed and the file does not
+pass speculative conversion, `--output-type auto` will produce a standard
+PDF instead of PDF/A. This is a change from previous versions where
+Ghostscript was required and PDF/A was always produced.
 :::
 
 ## Return code policy

@@ -167,7 +167,12 @@ These limitations are inherent to any software relying on Tesseract:
 
 :::{versionchanged} 17.0.0
 Ghostscript is no longer strictly required. OCRmyPDF can use pypdfium2
-for rasterization and verapdf for PDF/A validation.
+for rasterization and produce PDF/A without Ghostscript.
+:::
+
+:::{versionchanged} 17.13.0
+PDF/A produced without Ghostscript is checked by pikepdf's PDF/A validator
+(`pikepdf.pdfa`). veraPDF is no longer used.
 :::
 
 While Ghostscript remains a capable and feature-rich tool with a long history,
@@ -201,9 +206,12 @@ v17 addresses through alternative codepaths. When Ghostscript is used:
 - Ghostscript's PDF/A conversion may remove or deactivate
   hyperlinks and other active content.
 
-When pypdfium2 and verapdf are available, many of these limitations can be
-avoided by using the speculative PDF/A conversion path (enabled by default
-with `--output-type auto`).
+Many of these limitations are avoided by the speculative PDF/A conversion
+path, which OCRmyPDF tries first for all PDF/A output types and uses
+whenever the result passes pikepdf's PDF/A validator. Use
+`--pdfa-backend internal` to never use Ghostscript for PDF/A, or
+`--pdfa-backend ghostscript` to always use it. Install pypdfium2
+to avoid Ghostscript for rasterization as well.
 
 You can use `--output-type pdf` to disable PDF/A conversion and produce
 a standard, non-archival PDF.

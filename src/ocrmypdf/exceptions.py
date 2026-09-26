@@ -54,6 +54,12 @@ class MissingDependencyError(ExitCodeException):
     exit_code = ExitCode.missing_dependency
 
 
+class PdfaConversionFailedError(ExitCodeException):
+    """The output could not be made PDF/A in the way that was requested."""
+
+    exit_code = ExitCode.pdfa_conversion_failed
+
+
 class UnsupportedImageFormatError(ExitCodeException):
     """The image format is not supported."""
 
