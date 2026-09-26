@@ -105,7 +105,7 @@ chown app:app /app
 
 # Default working directory for bind-mounted data, so relative input/output
 # paths work without passing --workdir (e.g. `-v "$PWD:/data" in.pdf out.pdf`).
-# The webservice/watcher are run by absolute path (/app/*.py), unaffected by this.
+# The webservice/watcher locate their own files, so they work from any directory.
 RUN mkdir -p /data && chown app:app /data
 WORKDIR /data
 

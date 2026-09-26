@@ -272,21 +272,32 @@ docker run -it --user root --entrypoint sh jbarlow83/ocrmypdf-alpine
 Using the OCRmyPDF web service wrapper
 --------------------------------------
 
-The OCRmyPDF Docker image includes an example, barebones HTTP web
-service. The webservice may be launched as follows:
+The OCRmyPDF Docker image includes an example, barebones web service
+built with [Streamlit](https://streamlit.io/). It may be launched as follows:
 
 :::{code} bash
-docker run --entrypoint python -p 5000:5000 jbarlow83/ocrmypdf /app/webservice.py
+docker run --entrypoint python -p 8501:8501 jbarlow83/ocrmypdf /app/webservice.py
 :::
 
-We omit the `--rm` parameter so that the container will not be
-automatically deleted when it exits.
+Then open <http://localhost:8501> in a web browser. Streamlit listens on
+port 8501 by default; any arguments after `/app/webservice.py` are passed
+to `streamlit run`, so to use a different port:
 
-This will configure the machine to listen on port 5000. On Linux
-machines this is port 5000 of localhost. On macOS or Windows machines
-running Docker, this is port 5000 of the virtual machine that runs your
-Docker images. You can find its IP address using the command
-`docker-machine ip`.
+:::{code} bash
+docker run --entrypoint python -p 5000:5000 jbarlow83/ocrmypdf \
+    /app/webservice.py --server.port 5000
+:::
+
+An equivalent Docker Compose service:
+
+:::{code} yaml
+services:
+  ocrmypdf:
+    image: jbarlow83/ocrmypdf
+    entrypoint: ["python", "/app/webservice.py"]
+    ports:
+      - "8501:8501"
+:::
 
 Unlike command line usage this program will open a socket and wait for
 connections.
@@ -294,15 +305,9 @@ connections.
 :::{warning}
 The OCRmyPDF web service wrapper is intended for demonstration or
 development. It provides no security, no authentication, no protection
-against denial of service attacks, and no load balancing. The default
-Flask WSGI server is used, which is intended for development only. The
-server is single-threaded and so can respond to only one client at a
-time. While running OCR, it cannot respond to any other clients.
+against denial of service attacks, and no load balancing. It processes
+one file at a time for each browser session.
 :::
-
-Clients must keep their open connection while waiting for OCR to
-complete. This may entail setting a long timeout; this interface is more
-useful for internal HTTP API calls.
 
 Unlike the rest of OCRmyPDF, this web service is licensed under the
 Affero GPLv3 (AGPLv3) since Ghostscript is also licensed in this way.

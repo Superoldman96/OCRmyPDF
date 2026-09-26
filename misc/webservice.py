@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 try:
     import streamlit  # noqa: F401
@@ -25,7 +26,7 @@ if __name__ == '__main__':
             '-m',
             'streamlit',
             'run',
-            'misc/_webservice.py',
+            os.fspath(Path(__file__).resolve().with_name('_webservice.py')),
             *sys.argv[1:],
         ],
     )
