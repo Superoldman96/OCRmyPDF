@@ -44,7 +44,7 @@ body:
       label: Steps to reproduce
       description: Please include steps to reproduce.
       value: |
-        1. Import attached file into Paperless-ngx
+        1. Import attached file into Paperless-ngx/other app
         2. Trigger OCR
         3. Check log file
         4. ...

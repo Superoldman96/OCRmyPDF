@@ -12,6 +12,22 @@ is it fun to discuss big ideas, but we might save each other\'s time
 too. Perhaps some of the work you\'re contemplating is already half-done
 in a development branch.
 
+## AI-assisted contributions 🤖
+
+AI-assisted contributions are permitted. Proactive disclosure of AI use
+is recommended but not required; it's usually not hard to tell.
+
+When reporting issues with AI assistance, we encourage you to
+*stick to the facts* from a *user perspective*. Use the issue template,
+and provide a reproducer.
+
+AI speculation about how to solve an issue is unhelpful. Leave it out
+of your issue report. If you contribute a full PR, you're
+likely to get a solution that gets the details right.
+
+We will dismiss "vibe coded" PRs that don't appear to understand the
+project.
+
 ## Code style
 
 We use `ruff` for code formatting.

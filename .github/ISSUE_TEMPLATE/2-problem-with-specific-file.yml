@@ -40,6 +40,9 @@ body:
 
         We understand files may contain personal or sensitive information. Here are some options:
         - Try reproducing the issue with a file from the OCRmyPDF test suite. (See tests/resources)
+        - Use AI to generate a test file. Tell your AI agent exactly what you want: you need to remove
+          personal identifying information and create a minimal file that reproduces the issue.
+          Have your AI agent test the generated file to ensure it reproduces.
         - Try to create another file in the same way as your private file.
         - Encrypt the file to OCRmyPDF's private GPG key, and then zip the GPG file.
         - Use ``qpdf --json yourfile.pdf`` to produce a JSON representation of your file that
